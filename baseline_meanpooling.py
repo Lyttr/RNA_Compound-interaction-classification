@@ -32,7 +32,7 @@ train_dataset = create_dataset(train_df)
 test_dataset = create_dataset(test_df)
 
 
-torch.save(train_dataset, 'datasets/trainset_maxpooling.pt')
-torch.save(test_dataset, 'datasets/testset_maxpooling.pt')
+torch.save(train_dataset, 'datasets/trainset_meanpooling.pt')
+torch.save(test_dataset, 'datasets/testset_meanpooling.pt')
 
-print("Saved datasets to datasets/trainset_maxpooling.pt and datasets/testset_maxpooling.pt")
+print("Saved datasets to datasets/trainset_meanpooling.pt and datasets/testset_meanpooling.pt")
