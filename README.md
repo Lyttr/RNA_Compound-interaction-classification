@@ -9,3 +9,5 @@ cd RNA_Compound-interaction-classification
 <pre><code>
 pip install -r requirements.txt
 </code></pre>
+3. Generate dataset
+```aa```
