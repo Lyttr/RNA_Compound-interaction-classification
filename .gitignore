@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 # big files
-datasets/
+datasets/*.pt
 wandb/
 # Distribution / packaging
 .Python
