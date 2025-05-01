@@ -25,5 +25,5 @@ python baseline_meanpooling.py
 ```
 5. Train the model
 ```bash
-python train.py --train_path datasets/trainset.pt --test_path datasets/testset.py --output_dit results/test --project test_project --run_name test_run
+python train.py --train_path datasets/trainset.pt --test_path datasets/testset.pt --output_dit results/test --project test_project --run_name test_run
 ```
