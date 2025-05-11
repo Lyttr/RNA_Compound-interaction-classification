@@ -1,58 +1,45 @@
 import pandas as pd
 import torch
 import pickle
-import torch.nn.utils.rnn as rnn_utils
+from torch_geometric.data import Data
 
-# Load the CSV file
+# Load CSV and pickles
 train_df = pd.read_csv('datasets/trainset.csv')
 
-# Load the pickle files
 with open('raw/id_to_tokens.pkl', 'rb') as f:
     tokens_dict = pickle.load(f)
 with open('raw/id_to_graph.pkl', 'rb') as f:
     graph_dict = pickle.load(f)
 
-# Define the maximum token length for padding
-MAX_TOKEN_LENGTH = 1024  # Adjust this based on your data
+MAX_TOKEN_LENGTH = 1024  # for padding
 
-# Function to create dataset
 def create_dataset(df):
     dataset = []
     for _, row in df.iterrows():
         id1, id2 = row['Raw_ID1'], row['Raw_ID2']
-        label = torch.tensor(row['label'])
+        label = torch.tensor(row['label'], dtype=torch.long)
 
-        # Retrieve and pad token features
-        tokens_feat = torch.tensor(tokens_dict[id1])
+        # --- Tokens ---
+        tokens_feat = torch.tensor(tokens_dict[id1], dtype=torch.float)
         if tokens_feat.size(0) > MAX_TOKEN_LENGTH:
-            tokens_feat = tokens_feat[:MAX_TOKEN_LENGTH]  # Truncate if necessary
+            tokens_feat = tokens_feat[:MAX_TOKEN_LENGTH]
         else:
-            padding = torch.zeros(MAX_TOKEN_LENGTH - tokens_feat.size(0))
-            tokens_feat = torch.cat([tokens_feat, padding], dim=0)
+            pad_len = MAX_TOKEN_LENGTH - tokens_feat.size(0)
+            tokens_feat = torch.cat([tokens_feat, torch.zeros(pad_len)], dim=0)
 
-        # Retrieve graph features
-        graph_feat = torch.tensor(graph_dict[str(id2)])
+        # --- Graph ---
+        graph_data = graph_dict[str(id2)]
+        
 
-        # Concatenate features
-        features = torch.cat([tokens_feat, graph_feat], dim=-1)
-        dataset.append([features, label])
+        dataset.append((tokens_feat, graph_data, label))
     return dataset
 
-# Create the dataset
+# Build & save datasets
 train_dataset = create_dataset(train_df)
-
-# Save the dataset
 torch.save(train_dataset, 'datasets/trainset_transformer_gnn.pt')
 
-print("Saved GNN dataset to datasets/trainset_transformer_gnn.pt")
-
-# Load the test CSV file
 test_df = pd.read_csv('datasets/testset.csv')
-
-# Create the test dataset
 test_dataset = create_dataset(test_df)
-
-# Save the test dataset
 torch.save(test_dataset, 'datasets/testset_transformer_gnn.pt')
 
-print("Saved GNN test dataset to datasets/testset_transformer_gnn.pt")
+print("Saved train/test datasets with token and graph pairs.")
