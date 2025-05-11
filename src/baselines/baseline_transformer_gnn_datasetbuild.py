@@ -31,7 +31,7 @@ def create_dataset(df):
             tokens_feat = torch.cat([tokens_feat, padding], dim=0)
 
         # Retrieve graph features
-        graph_feat = torch.tensor(graph_dict[id2])
+        graph_feat = torch.tensor(graph_dict[str(id2)])
 
         # Concatenate features
         features = torch.cat([tokens_feat, graph_feat], dim=-1)
