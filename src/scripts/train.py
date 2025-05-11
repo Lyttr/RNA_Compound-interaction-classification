@@ -8,7 +8,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 import wandb
-from model import MLP
+from src.models.model import MLP
 import time
 
 parser = argparse.ArgumentParser()
