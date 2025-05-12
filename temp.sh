@@ -1,0 +1,1 @@
+python -m src.scripts.baseline_transformer_gnn_train --train_path datasets/trainset_transformer_gnn.pt --test_path datasets/testset_transformer_gnn.pt --lr 1e-4  --output_dir results/baseline_transformergnn --project mlp --run_name baseline_transformergnn --batch_size 128
