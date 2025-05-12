@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from transformer import TransformerModel
-from gnn import GNN_graphpred
+from src.models.transformer import TransformerModel
+from src.models.gnn import GNN_graphpred
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim=1024):
@@ -35,7 +35,7 @@ class TransformerGNN(nn.Module):
         super(TransformerGNN, self).__init__()
         self.transformer = TransformerModel(vocab_size, embed_size, num_heads, num_layers)
         self.gnn = GNN_graphpred(**gnn_config)
-        self.mlp = MLP(input_dim=embed_size + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
+        self.mlp = MLP(input_dim=1024 + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data):
         # Process tokens through the transformer
@@ -51,21 +51,3 @@ class TransformerGNN(nn.Module):
         output = self.mlp(combined_embeddings)
         return output
 
-# Example usage
-# vocab_size = 10000
-# embed_size = 512
-# num_heads = 8
-# num_layers = 6
-# gnn_config = {
-#     "num_layer": 5,
-#     "emb_dim": 300,
-#     "num_tasks": 1,
-#     "JK": "last",
-#     "graph_pooling": "mean",
-#     "gnn_type": "gin"
-# }
-# mlp_hidden_dim = 1024
-# model = TransformerGNN(vocab_size, embed_size, num_heads, num_layers, gnn_config, mlp_hidden_dim)
-# tokens = torch.randint(0, vocab_size, (32, 1024))
-# graph_data = ...  # Your graph data here
-# output = model(tokens, graph_data)

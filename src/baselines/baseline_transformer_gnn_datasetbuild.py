@@ -20,22 +20,23 @@ def create_dataset(df):
         label = torch.tensor(row['label'], dtype=torch.long)
 
         # --- Tokens ---
-        tokens_feat = torch.tensor(tokens_dict[id1], dtype=torch.float)
+        tokens_feat = torch.tensor(tokens_dict[id1], dtype=torch.long)
         if tokens_feat.size(0) > MAX_TOKEN_LENGTH:
             tokens_feat = tokens_feat[:MAX_TOKEN_LENGTH]
         else:
             pad_len = MAX_TOKEN_LENGTH - tokens_feat.size(0)
-            tokens_feat = torch.cat([tokens_feat, torch.zeros(pad_len)], dim=0)
+            tokens_feat = torch.cat([tokens_feat, torch.ones(pad_len,dtype=torch.long)], dim=0)
 
         # --- Graph ---
-        graph_data = graph_dict[str(id2)]
+        graph_data = graph_dict[str(id2)][0]
         
-
+        
         dataset.append((tokens_feat, graph_data, label))
     return dataset
 
 # Build & save datasets
 train_dataset = create_dataset(train_df)
+print(len(train_df))
 torch.save(train_dataset, 'datasets/trainset_transformer_gnn.pt')
 
 test_df = pd.read_csv('datasets/testset.csv')

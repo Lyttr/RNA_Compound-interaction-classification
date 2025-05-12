@@ -11,7 +11,7 @@ import wandb
 
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
-from model import FusionModel  # 你自己写的 model.py，内含 GNN + TokenEncoder + Classifier
+from src.models.model import TransformerGNN
 
 # ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
@@ -60,16 +60,22 @@ train_loader = DataLoader(TensorGraphDataset(train_data), batch_size=args.batch_
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-# ------------------ Init Model ------------------
+
+vocab_size = 23  
+embed_size = 512   
+num_heads = 8       
+num_layers = 6      
 gnn_config = {
     "num_layer": 5,
     "emb_dim": 300,
-    "num_tasks": 2,
+    "num_tasks": 300,
     "JK": "last",
-    "graph_pooling": "mean",
+    "graph_pooling": "attention",
     "gnn_type": "gin"
 }
-model = FusionModel(token_dim=1024, hidden_dim=300, gnn_config=gnn_config).to(device)
+mlp_hidden_dim = 1024
+
+model = TransformerGNN(vocab_size, embed_size, num_heads, num_layers, gnn_config, mlp_hidden_dim).to(device)
 
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -89,13 +95,12 @@ for epoch in range(args.epochs):
         graphs = graphs.to(device)
 
         optimizer.zero_grad()
-        logits = model(tokens, graphs)
-        probs = torch.sigmoid(logits[:, 1])  # probs for positive class
-        loss = criterion(probs, labels.float())
+        output = model(tokens, graphs)
+        loss = criterion(output, labels.float())
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-
+        
     # Validation
     model.eval()
     val_loss = 0
@@ -103,9 +108,9 @@ for epoch in range(args.epochs):
         for tokens, graphs, labels in val_loader:
             tokens, labels = tokens.to(device), labels.to(device)
             graphs = graphs.to(device)
-            logits = model(tokens, graphs)
-            probs = torch.sigmoid(logits[:, 1])
-            loss = criterion(probs, labels.float())
+            output = model(tokens, graphs)
+            
+            loss = criterion(output, labels.float())
             val_loss += loss.item()
 
     total_loss /= len(train_loader)
@@ -142,8 +147,8 @@ with torch.no_grad():
     for tokens, graphs, labels in test_loader:
         tokens = tokens.to(device)
         graphs = graphs.to(device)
-        logits = model(tokens, graphs)
-        probs = torch.sigmoid(logits[:, 1])
+        output = model(tokens, graphs)
+        probs = output.cpu()
         preds = (probs > 0.5).long()
         y_true.extend(labels.tolist())
         y_pred.extend(preds.tolist())
