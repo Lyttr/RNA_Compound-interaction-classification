@@ -26,7 +26,7 @@ def create_dataset(df):
         else:
             pad_len = MAX_TOKEN_LENGTH - tokens_feat.size(0)
             tokens_feat = torch.cat([tokens_feat, torch.ones(pad_len,dtype=torch.long)], dim=0)
-
+        print(tokens_feat)
         # --- Graph ---
         graph_data = graph_dict[str(id2)][0]
         

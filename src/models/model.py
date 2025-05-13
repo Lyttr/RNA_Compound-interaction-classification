@@ -35,19 +35,11 @@ class TransformerGNN(nn.Module):
         super(TransformerGNN, self).__init__()
         self.transformer = TransformerModel(vocab_size, embed_size, num_heads, num_layers)
         self.gnn = GNN_graphpred(**gnn_config)
-        self.mlp = MLP(input_dim=1024 + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
+        self.mlp = MLP(input_dim=embed_size + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data):
-        # Process tokens through the transformer
-        token_embeddings = self.transformer(tokens)  # Shape: (batch_size, seq_length)
-
-        # Process graph data through the GNN
-        graph_embeddings = self.gnn(graph_data)  # Shape: (batch_size, gnn_emb_dim)
-
-        # Concatenate the embeddings
-        combined_embeddings = torch.cat((token_embeddings, graph_embeddings), dim=1)
-
-        # Feed into MLP for classification
-        output = self.mlp(combined_embeddings)
-        return output
-
+        # 直接传入 transformer，它会自动处理 padding mask
+        token_embeddings = self.transformer(tokens)  # (batch_size, embed_dim)
+        graph_embeddings = self.gnn(graph_data)      # (batch_size, gnn_emb_dim)
+        combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
+        return self.mlp(combined)
