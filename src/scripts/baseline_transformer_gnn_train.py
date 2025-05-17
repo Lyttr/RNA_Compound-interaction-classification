@@ -11,7 +11,7 @@ import wandb
 
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
-from src.models.model import TransformerGNN
+from src.models.model import TransformerGNN, LSTM_GNN  
 
 # ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
@@ -24,6 +24,7 @@ parser.add_argument('--epochs', type=int, default=80)
 parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='fusion-training')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
+parser.add_argument('--model_type', type=str, choices=['transformer', 'lstm'], default='transformer')
 args = parser.parse_args()
 
 os.makedirs(args.output_dir, exist_ok=True)
@@ -47,7 +48,17 @@ class TensorGraphDataset(torch.utils.data.Dataset):
 
 def collate_fn(batch):
     token_batch, graph_batch, label_batch = zip(*batch)
-    token_batch = torch.stack(token_batch)
+    
+    
+    token_batch = torch.stack(token_batch)  # (B, T)
+    pad_token_id = 1
+    
+    lengths = (token_batch != pad_token_id).sum(dim=1)
+    max_len = lengths.max()
+
+   
+    token_batch = token_batch[:, :max_len]
+
     graph_batch = Batch.from_data_list(graph_batch)
     label_batch = torch.stack(label_batch)
     return token_batch, graph_batch, label_batch
@@ -60,11 +71,13 @@ train_loader = DataLoader(TensorGraphDataset(train_data), batch_size=args.batch_
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-
+# ------------------ Model Config ------------------
 vocab_size = 23  
-embed_size = 512   
+embed_size = 256   
 num_heads = 8       
-num_layers = 6      
+num_layers = 4      
+pad_token_id = 1
+
 gnn_config = {
     "num_layer": 5,
     "emb_dim": 300,
@@ -75,8 +88,30 @@ gnn_config = {
 }
 mlp_hidden_dim = 1024
 
-model = TransformerGNN(vocab_size, embed_size, num_heads, num_layers, gnn_config, mlp_hidden_dim).to(device)
+# ------------------ Build Model ------------------
+if args.model_type == 'transformer':
+    model = TransformerGNN(
+        vocab_size=vocab_size,
+        embed_size=embed_size,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        gnn_config=gnn_config,
+        mlp_hidden_dim=mlp_hidden_dim
+    )
+elif args.model_type == 'lstm':
+    model = LSTM_GNN(
+        vocab_size=vocab_size,
+        embed_size=embed_size,
+        lstm_hidden_size=320,  # 320 x 2 = 640
+        lstm_layers=2,
+        gnn_config=gnn_config,
+        mlp_hidden_dim=mlp_hidden_dim,
+        bidirectional=True,
+       
+    )
+model = model.to(device)
 
+# ------------------ Loss, Optimizer, Scheduler ------------------
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
@@ -95,12 +130,12 @@ for epoch in range(args.epochs):
         graphs = graphs.to(device)
 
         optimizer.zero_grad()
-        output = model(tokens, graphs)
+        output = model(tokens, graphs)  # mask handled inside model
         loss = criterion(output, labels.float())
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        
+
     # Validation
     model.eval()
     val_loss = 0
@@ -109,7 +144,6 @@ for epoch in range(args.epochs):
             tokens, labels = tokens.to(device), labels.to(device)
             graphs = graphs.to(device)
             output = model(tokens, graphs)
-            
             loss = criterion(output, labels.float())
             val_loss += loss.item()
 
@@ -121,7 +155,12 @@ for epoch in range(args.epochs):
     print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Val Loss: {val_loss:.4f}")
     wandb.log({"train_loss": total_loss, "val_loss": val_loss, "epoch": epoch+1})
     scheduler.step(val_loss)
-
+        # Save latest model every 50 epochs
+    if (epoch + 1) % 50 == 0:
+        latest_model_path = os.path.join(args.output_dir, 'latest_fusion_model.pt')
+        torch.save(model.state_dict(), latest_model_path)
+        print(f"Checkpoint saved to {latest_model_path}")
+        wandb.save(latest_model_path)
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         best_model_state = model.state_dict()

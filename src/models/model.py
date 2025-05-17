@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from src.models.transformer import TransformerModel
 from src.models.gnn import GNN_graphpred
+from src.models.lstm import LSTMEncoder  # ⬅️ 新增导入
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim=1024):
@@ -38,8 +39,22 @@ class TransformerGNN(nn.Module):
         self.mlp = MLP(input_dim=embed_size + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data):
-        # 直接传入 transformer，它会自动处理 padding mask
         token_embeddings = self.transformer(tokens)  # (batch_size, embed_dim)
         graph_embeddings = self.gnn(graph_data)      # (batch_size, gnn_emb_dim)
+        combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
+        return self.mlp(combined)
+
+class LSTM_GNN(nn.Module):
+    def __init__(self, vocab_size, embed_size, lstm_hidden_size, lstm_layers, gnn_config, mlp_hidden_dim, bidirectional=False):
+        super(LSTM_GNN, self).__init__()
+        self.lstm = LSTMEncoder(vocab_size, embed_size, lstm_hidden_size, lstm_layers, bidirectional=bidirectional)
+        self.gnn = GNN_graphpred(**gnn_config)
+
+        lstm_output_dim = self.lstm.output_dim  # 自动根据是否双向确定维度
+        self.mlp = MLP(input_dim=lstm_output_dim + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, graph_data, mask=None):
+        token_embeddings = self.lstm(tokens, mask=mask)     # (batch_size, lstm_output_dim)
+        graph_embeddings = self.gnn(graph_data)             # (batch_size, gnn_emb_dim)
         combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
         return self.mlp(combined)
