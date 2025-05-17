@@ -9,6 +9,7 @@ __pycache__/
 # big files
 datasets/*.pt
 wandb/
+results/**/*.pt
 # Distribution / packaging
 .Python
 build/
