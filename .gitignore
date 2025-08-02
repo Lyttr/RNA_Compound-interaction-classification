@@ -1,3 +1,6 @@
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -5,6 +8,9 @@ __pycache__/
 
 # C extensions
 *.so
+
+raw/*.pkl
+
 
 # big files
 datasets/*.pt
