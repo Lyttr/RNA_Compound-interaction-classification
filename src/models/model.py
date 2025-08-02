@@ -24,11 +24,11 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.fc1(x)
         x = self.relu1(x)
-        #x = self.drop1(x)
+
 
         x = self.fc2(x)
         x = self.relu2(x)
-        #x = self.drop2(x)
+
 
         x = self.fc3(x)
         x = self.sigmoid(x)
@@ -42,11 +42,32 @@ class TransformerGNN(nn.Module):
         self.mlp = MLP(input_dim=embed_size + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data):
-        token_embeddings = self.transformer(tokens)  # (batch_size, embed_dim)
-        graph_embeddings = self.gnn(graph_data)      # (batch_size, gnn_emb_dim)
+        token_embeddings = self.transformer(tokens) 
+        graph_embeddings = self.gnn(graph_data)     
         combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
         return self.mlp(combined)
+class Transformer(nn.Module):
+    def __init__(self, vocab_size, embed_size, num_heads, num_layers, mlp_hidden_dim):
+        super(Transformer, self).__init__()
+        self.transformer = TransformerModel(vocab_size, embed_size, num_heads, num_layers)
+      
+        self.mlp = MLP(input_dim=embed_size , hidden_dim=mlp_hidden_dim)
 
+    def forward(self, tokens):
+        token_embeddings = self.transformer(tokens)     
+        return self.mlp(token_embeddings)
+class TransformerCNN(nn.Module):
+    def __init__(self, vocab_size, embed_size, num_heads, num_layers, mlp_hidden_dim):
+        super(TransformerCNN, self).__init__()
+        self.transformer = TransformerModel(vocab_size, embed_size, num_heads, num_layers)
+        self.cnn=ImageMol("ResNet18")
+        self.mlp = MLP(input_dim=embed_size + 512, hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, image_data):
+        token_embeddings = self.transformer(tokens) 
+        image_embeddings = self.cnn(image_data)   
+        combined = torch.cat((token_embeddings, image_embeddings), dim=1)
+        return self.mlp(combined)
 class LSTM_GNN(nn.Module):
     def __init__(self, vocab_size, embed_size, lstm_hidden_size, lstm_layers, gnn_config, mlp_hidden_dim, bidirectional=False):
         super(LSTM_GNN, self).__init__()
@@ -57,9 +78,35 @@ class LSTM_GNN(nn.Module):
         self.mlp = MLP(input_dim=lstm_output_dim + gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data, mask=None):
-        token_embeddings = self.lstm(tokens, mask=mask)     # (batch_size, lstm_output_dim)
-        graph_embeddings = self.gnn(graph_data)             # (batch_size, gnn_emb_dim)
+        token_embeddings = self.lstm(tokens, mask=mask)     
+        graph_embeddings = self.gnn(graph_data)            
         combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
+        return self.mlp(combined)
+class LSTM(nn.Module):
+    def __init__(self, vocab_size, embed_size, lstm_hidden_size, lstm_layers, mlp_hidden_dim, bidirectional=False):
+        super(LSTM, self).__init__()
+        self.lstm = LSTMEncoder(vocab_size, embed_size, lstm_hidden_size, lstm_layers, bidirectional=bidirectional)
+    
+
+        lstm_output_dim = self.lstm.output_dim  
+        self.mlp = MLP(input_dim=lstm_output_dim , hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, mask=None):
+        token_embeddings = self.lstm(tokens, mask=mask)     
+        return self.mlp(token_embeddings)
+class LSTM_CNN(nn.Module):
+    def __init__(self, vocab_size, embed_size, lstm_hidden_size, lstm_layers, mlp_hidden_dim, bidirectional=False):
+        super(LSTM_CNN, self).__init__()
+        self.lstm = LSTMEncoder(vocab_size, embed_size, lstm_hidden_size, lstm_layers, bidirectional=bidirectional)
+        self.cnn=ImageMol("ResNet18")
+
+        lstm_output_dim = self.lstm.output_dim  
+        self.mlp = MLP(input_dim=lstm_output_dim + 512, hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, image_data, mask=None):
+        token_embeddings = self.lstm(tokens, mask=mask)     
+        image_embeddings = self.cnn(image_data)       
+        combined = torch.cat((token_embeddings, image_embeddings), dim=1)
         return self.mlp(combined)
 class RNAFM_Drugchat(nn.Module):
     def __init__(self, gnn_config,mlp_hidden_dim):

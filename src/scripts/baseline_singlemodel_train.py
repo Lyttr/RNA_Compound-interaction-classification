@@ -11,7 +11,7 @@ import wandb
 
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
-from src.models.model import TransformerGNN, LSTM_GNN,LSTM_CNN ,TransformerCNN
+from src.models.model import Transformer, LSTM
 
 
 def get_metrics(y_true, y_pred_prob, threshold=0.5):
@@ -38,7 +38,7 @@ parser.add_argument('--epochs', type=int, default=80)
 parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='mlp')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
-parser.add_argument('--model_type', type=str, choices=['transformer', 'lstm_gnn','lstm_cnn','transformer_cnn'], default='transformer')
+parser.add_argument('--model_type', type=str, choices=['transformer', 'lstm'], default='transformer')
 args = parser.parse_args()
 
 os.makedirs(args.output_dir, exist_ok=True)
@@ -60,16 +60,14 @@ class TensorGraphDataset(torch.utils.data.Dataset):
         return self.data[idx] 
 
 def collate_fn(batch):
-    token_batch, graph_batch, label_batch = zip(*batch)
+    token_batch, label_batch = zip(*batch)
     token_batch = torch.stack(token_batch)
-    pad_token_id = 1
+    pad_token_id = 0
     lengths = (token_batch != pad_token_id).sum(dim=1)
     max_len = lengths.max()
     token_batch = token_batch[:, :max_len]
-    #graph_batch = Batch.from_data_list(graph_batch)
-    graph_batch = torch.stack(graph_batch) 
     label_batch = torch.stack(label_batch)
-    return token_batch, graph_batch, label_batch
+    return token_batch, label_batch
 
 val_len = len(test_data) // 2
 test_len = len(test_data) - val_len
@@ -80,34 +78,22 @@ val_loader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=coll
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
 
-vocab_size = 23  
+vocab_size = 64
 embed_size = 256   
 num_heads = 8       
 num_layers = 4      
 pad_token_id = 1
 
-gnn_config = {
-    "num_layer": 5,
-    "emb_dim": 300,
-    "num_tasks": 300,
-    "JK": "last",
-    "graph_pooling": "attention",
-    "gnn_type": "gin"
-}
+
 mlp_hidden_dim = 1024
 
-# ------------------ Build Model ------------------
+
 if args.model_type == 'transformer':
-    model = TransformerGNN(vocab_size, embed_size, num_heads, num_layers, gnn_config, mlp_hidden_dim)
-elif args.model_type == 'transformer_cnn':
-    model = TransformerCNN(vocab_size, embed_size, num_heads, num_layers, mlp_hidden_dim)
-elif args.model_type == 'lstm_gnn':
-    model = LSTM_GNN(vocab_size, embed_size, 320, 2, gnn_config, mlp_hidden_dim, bidirectional=True)
-elif args.model_type == 'lstm_cnn':
-    model = LSTM_CNN(vocab_size, embed_size, 320, 2, mlp_hidden_dim, bidirectional=True)
+    model = Transformer(vocab_size, embed_size, num_heads, num_layers, mlp_hidden_dim)
+elif args.model_type == 'lstm':
+    model = LSTM(vocab_size, embed_size, 320, 2, mlp_hidden_dim, bidirectional=True)
 model = model.to(device)
 
-# ------------------ Loss, Optimizer, Scheduler ------------------
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
@@ -121,11 +107,11 @@ for epoch in range(args.epochs):
 
     model.train()
     total_loss = 0
-    for tokens, graphs, labels in train_loader:
+    for tokens, labels in train_loader:
         tokens, labels = tokens.to(device), labels.to(device)
-        graphs = graphs.to(device)
+       
         optimizer.zero_grad()
-        output = model(tokens, graphs)
+        output = model(tokens)
         loss = criterion(output, labels.float())
         loss.backward()
         optimizer.step()
@@ -136,9 +122,9 @@ for epoch in range(args.epochs):
     model.eval()
     y_tr_true, y_tr_prob = [], []
     with torch.no_grad():
-        for tokens, graphs, labels in train_loader:
-            tokens, graphs = tokens.to(device), graphs.to(device)
-            probs = model(tokens, graphs).cpu()
+        for tokens, labels in train_loader:
+            tokens = tokens.to(device)
+            probs = model(tokens).cpu()
             y_tr_true.extend(labels)
             y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
@@ -146,10 +132,10 @@ for epoch in range(args.epochs):
     val_loss = 0
     y_val_true, y_val_prob = [], []
     with torch.no_grad():
-        for tokens, graphs, labels in val_loader:
+        for tokens, labels in val_loader:
             tokens, labels = tokens.to(device), labels.to(device)
-            graphs = graphs.to(device)
-            probs = model(tokens, graphs)
+      
+            probs = model(tokens)
             loss = criterion(probs, labels.float())
             val_loss += loss.item()
             y_val_true.extend(labels.cpu())
@@ -193,9 +179,9 @@ if best_model_state:
 model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
-    for tokens, graphs, labels in test_loader:
-        tokens, graphs = tokens.to(device), graphs.to(device)
-        probs = model(tokens, graphs).cpu()
+    for tokens, labels in test_loader:
+        tokens = tokens.to(device)
+        probs = model(tokens).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
 

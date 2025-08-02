@@ -10,7 +10,21 @@ import seaborn as sns
 import wandb
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
-from src.models.model import RNAFM_Drugchat 
+from src.models.model import RNAFM_Drugchat
+
+# ------------------ Metric Function ------------------
+def get_metrics(y_true, y_pred_prob, threshold=0.5):
+    y_pred = (y_pred_prob > threshold).long()
+    y_true_np = y_true.tolist()
+    y_pred_np = y_pred.tolist()
+    y_prob_np = y_pred_prob.tolist()
+    return {
+        "acc": accuracy_score(y_true_np, y_pred_np),
+        "precision": precision_score(y_true_np, y_pred_np),
+        "recall": recall_score(y_true_np, y_pred_np),
+        "f1": f1_score(y_true_np, y_pred_np),
+        "auc": roc_auc_score(y_true_np, y_prob_np)
+    }
 
 # ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
@@ -24,10 +38,29 @@ parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='fusion-rnafm')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
+parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
 args = parser.parse_args()
 
 os.makedirs(args.output_dir, exist_ok=True)
-wandb.init(project=args.project, name=args.run_name, config=vars(args))
+
+# -------- wandb resume --------
+wandb_id_path = os.path.join(args.output_dir, 'wandb_id.txt')
+if args.resume is not None and os.path.exists(wandb_id_path):
+    with open(wandb_id_path, 'r') as f:
+        wandb_id = f.read().strip()
+    print("resume")
+else:
+    wandb_id = wandb.util.generate_id()
+    with open(wandb_id_path, 'w') as f:
+        f.write(wandb_id)
+
+wandb.init(
+    project=args.project,
+    name=args.run_name,
+    config=vars(args),
+    id=wandb_id,
+    resume='allow'
+)
 
 # ------------------ Device ------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -43,18 +76,14 @@ class MultiModalDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.data)
     def __getitem__(self, idx):
-        return self.data[idx]  # (tokens, graph, image, label)
+        return self.data[idx]
 
 def collate_fn(batch):
     tokens, graphs, images, labels = zip(*batch)
-
     tokens = torch.stack(tokens)
     pad_token_id = 1
-    
     lengths = (tokens != pad_token_id).sum(dim=1)
     max_len = lengths.max()
-
-   
     tokens = tokens[:, :max_len]
     graphs = Batch.from_data_list(graphs)
     images = torch.stack(images)
@@ -78,7 +107,6 @@ gnn_config = {
     "graph_pooling": "attention",
     "gnn_type": "gin"
 }
-
 model = RNAFM_Drugchat(gnn_config=gnn_config, mlp_hidden_dim=args.mlp_hidden_dim).to(device)
 
 # ------------------ Loss, Optimizer ------------------
@@ -86,47 +114,85 @@ criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
+# ------------------ Resume Checkpoint ------------------
+start_epoch = 0
 best_val_loss = float('inf')
 counter = 0
-best_model_state = None
 train_losses, val_losses = [], []
 
+if args.resume is not None and os.path.exists(args.resume):
+    print(f"Resuming from checkpoint: {args.resume}")
+    checkpoint = torch.load(args.resume)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+    counter = checkpoint.get('counter', 0)
+    start_epoch = checkpoint.get('epoch', 0) + 1
+
 # ------------------ Training ------------------
-for epoch in range(args.epochs):
+for epoch in range(start_epoch, args.epochs):
     model.train()
     total_loss = 0
     for tokens, graphs, images, labels in train_loader:
         tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
-
         optimizer.zero_grad()
         output = model(tokens, graphs, images)
         loss = criterion(output, labels.float())
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+    total_loss /= len(train_loader)
 
     model.eval()
+    y_tr_true, y_tr_prob = [], []
+    with torch.no_grad():
+        for tokens, graphs, images, labels in train_loader:
+            tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
+            probs = model(tokens, graphs, images).cpu()
+            y_tr_true.extend(labels)
+            y_tr_prob.extend(probs)
+    train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
+
     val_loss = 0
+    y_val_true, y_val_prob = [], []
     with torch.no_grad():
         for tokens, graphs, images, labels in val_loader:
             tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
-            output = model(tokens, graphs, images)
-            loss = criterion(output, labels.float())
+            probs = model(tokens, graphs, images)
+            loss = criterion(probs, labels.float())
             val_loss += loss.item()
-
-    total_loss /= len(train_loader)
+            y_val_true.extend(labels.cpu())
+            y_val_prob.extend(probs.cpu())
     val_loss /= len(val_loader)
+    val_metrics = get_metrics(torch.tensor(y_val_true), torch.stack(y_val_prob))
+
     train_losses.append(total_loss)
     val_losses.append(val_loss)
 
     print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f}")
-    wandb.log({"train_loss": total_loss, "val_loss": val_loss, "epoch": epoch+1})
+    wandb.log({
+        "epoch": epoch + 1,
+        "train/loss": total_loss,
+        **{f"train/{k}": v for k, v in train_metrics.items()},
+        "val/loss": val_loss,
+        **{f"val/{k}": v for k, v in val_metrics.items()}
+    }, step=epoch + 1)
+
     scheduler.step(val_loss)
 
-    
-    path = os.path.join(args.output_dir, 'latest_model.pt')
-    torch.save(model.state_dict(), path)
-    wandb.save(path)
+    # Save latest checkpoint
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': best_val_loss,
+        'counter': counter
+    }
+    ckpt_path = os.path.join(args.output_dir, 'latest_model.pt')
+    torch.save(checkpoint, ckpt_path)
+    wandb.save(ckpt_path)
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
@@ -138,45 +204,27 @@ for epoch in range(args.epochs):
             print("Early stopping triggered.")
             break
 
-# ------------------ Save Best Model ------------------
+# Save best model
 if best_model_state:
     model.load_state_dict(best_model_state)
-    model_path = os.path.join(args.output_dir, 'best_model.pt')
-    torch.save(model.state_dict(), model_path)
-    wandb.save(model_path)
+    best_model_path = os.path.join(args.output_dir, 'best_model.pt')
+    torch.save({'model_state_dict': best_model_state}, best_model_path)
+    wandb.save(best_model_path)
 
 # ------------------ Evaluation ------------------
 model.eval()
-y_true, y_pred, y_score = [], [], []
-
+y_true, y_prob = [], []
 with torch.no_grad():
     for tokens, graphs, images, labels in test_loader:
         tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
-        output = model(tokens, graphs, images)
-        probs = output.cpu()
-        preds = (probs > 0.5).long()
-        y_true.extend(labels.tolist())
-        y_pred.extend(preds.tolist())
-        y_score.extend(probs.tolist())
+        probs = model(tokens, graphs, images).cpu()
+        y_true.extend(labels)
+        y_prob.extend(probs)
 
-acc = accuracy_score(y_true, y_pred)
-f1 = f1_score(y_true, y_pred)
-precision = precision_score(y_true, y_pred)
-recall = recall_score(y_true, y_pred)
-auc = roc_auc_score(y_true, y_score)
-
-print(f"Test Accuracy : {acc * 100:.2f}%")
-print(f"F1 Score      : {f1:.4f}")
-print(f"Precision     : {precision:.4f}")
-print(f"Recall        : {recall:.4f}")
-print(f"AUC           : {auc:.4f}")
-wandb.log({
-    "test_acc": acc,
-    "test_f1": f1,
-    "test_precision": precision,
-    "test_recall": recall,
-    "test_auc": auc
-})
+test_metrics = get_metrics(torch.tensor(y_true), torch.stack(y_prob))
+for k, v in test_metrics.items():
+    print(f"{k:10}: {v:.4f}")
+wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
 
 # ------------------ Plots ------------------
 plt.figure()
@@ -191,8 +239,8 @@ plt.savefig(loss_path)
 wandb.log({"loss_curve": wandb.Image(loss_path)})
 
 plt.figure()
-fpr, tpr, _ = roc_curve(y_true, y_score)
-plt.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
+fpr, tpr, _ = roc_curve(y_true, [x.item() for x in y_prob])
+plt.plot(fpr, tpr, label=f"AUC = {test_metrics['auc']:.4f}")
 plt.plot([0, 1], [0, 1], linestyle='--')
 plt.xlabel("FPR")
 plt.ylabel("TPR")
@@ -202,7 +250,7 @@ plt.savefig(roc_path)
 wandb.log({"roc_curve": wandb.Image(roc_path)})
 
 plt.figure()
-cm = confusion_matrix(y_true, y_pred)
+cm = confusion_matrix(y_true, [(x > 0.5).long() for x in y_prob])
 sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
 plt.title("Confusion Matrix")
 cm_path = os.path.join(args.output_dir, 'confusion_matrix.png')

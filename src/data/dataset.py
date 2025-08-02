@@ -1,35 +1,25 @@
-# Step 1: Prepare CSVs (train/test split and text format)
+
 import pandas as pd
 import numpy as np
 import os
 
 os.makedirs('datasets', exist_ok=True)
 
-# Load and clean compound data
 compound = pd.read_csv('raw/compound.csv')
 compound = compound[compound['SMILES'].notna() & (compound['SMILES'] != '')]
 compound = compound[~compound['id'].duplicated(keep=False)]
-
-# Load and clean RNA data
 rna = pd.read_csv('raw/rna.csv')
 rna = rna[(rna['seqence'] != 'no result') & (rna['seqence'].str.len() <= 1023)]
 rna = rna[~rna['id'].duplicated(keep=False)]
-
-# Load raw interaction data
 raw = pd.read_csv('raw/Download_data_RC.txt', sep='\t', dtype=str)
 raw = raw.dropna(subset=['Raw_ID1', 'Raw_ID2'])
 raw['Raw_ID1'] = raw['Raw_ID1'].str.split(':').str[1]
 raw['Raw_ID2'] = raw['Raw_ID2'].str.split(':').str[1]
-
-# Filter only RNA-compound pairs existing in both cleaned datasets
 rna_ids = set(rna['id'])
 compound_ids = set(compound['id'])
 filtered = raw[raw['Raw_ID1'].isin(rna_ids) & raw['Raw_ID2'].isin(compound_ids)]
-
-# Split into strong and weak bindings
 strong = filtered[filtered['strong'].notna()]
 weak = filtered[filtered['strong'].isna()]
-
 strong.to_csv('datasets/strong.csv', index=False)
 weak.to_csv('datasets/weak.csv', index=False)
 
@@ -85,19 +75,14 @@ def generate_dataset(weak_df, strong_df, total_size=5000, random_seed=42):
     test_df = pd.concat([test_pos, test_neg], ignore_index=True).sample(frac=1, random_state=random_seed).reset_index(drop=True)
 
     return train_df, test_df
-
-# Calculate total size and generate datasets
 total_size = (len(strong) + len(weak)) * 5 - 1
 train_df, test_df = generate_dataset(weak, strong, total_size=total_size)
 
 print(f"Train size: {len(train_df)} | Pos: {(train_df['label'] == 1).sum()} | Neg: {(train_df['label'] == 0).sum()}")
 print(f"Test  size: {len(test_df)} | Pos: {(test_df['label'] == 1).sum()} | Neg: {(test_df['label'] == 0).sum()}")
 
-# Save Raw_ID1, Raw_ID2, label
 train_df[['Raw_ID1', 'Raw_ID2', 'label']].to_csv('datasets/trainset.csv', index=False)
 test_df[['Raw_ID1', 'Raw_ID2', 'label']].to_csv('datasets/testset.csv', index=False)
-
-# Create text datasets
 def create_text_dataset(df, rna_df, compound_df, out_path):
     rna_dict = dict(zip(rna_df['id'], rna_df['seqence']))
     compound_dict = dict(zip(compound_df['id'], compound_df['SMILES']))
