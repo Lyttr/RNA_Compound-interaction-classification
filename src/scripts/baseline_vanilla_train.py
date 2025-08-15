@@ -38,35 +38,29 @@ parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='fusion-rnafm')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
-parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+
 args = parser.parse_args()
 
 os.makedirs(args.output_dir, exist_ok=True)
 
-# -------- wandb resume --------
+
 wandb_id_path = os.path.join(args.output_dir, 'wandb_id.txt')
-if args.resume is not None and os.path.exists(wandb_id_path):
-    with open(wandb_id_path, 'r') as f:
-        wandb_id = f.read().strip()
-    print("resume")
-else:
-    wandb_id = wandb.util.generate_id()
-    with open(wandb_id_path, 'w') as f:
-        f.write(wandb_id)
+
+wandb_id = wandb.util.generate_id()
+with open(wandb_id_path, 'w') as f:
+    f.write(wandb_id)
 
 wandb.init(
     project=args.project,
     name=args.run_name,
     config=vars(args),
     id=wandb_id,
-    resume='allow'
+
 )
 
-# ------------------ Device ------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# ------------------ Load Dataset ------------------
 train_data = torch.load(args.train_path)
 test_data = torch.load(args.test_path)
 
@@ -120,17 +114,6 @@ best_val_loss = float('inf')
 counter = 0
 train_losses, val_losses = [], []
 
-if args.resume is not None and os.path.exists(args.resume):
-    print(f"Resuming from checkpoint: {args.resume}")
-    checkpoint = torch.load(args.resume)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-    counter = checkpoint.get('counter', 0)
-    start_epoch = checkpoint.get('epoch', 0) + 1
-
-# ------------------ Training ------------------
 for epoch in range(start_epoch, args.epochs):
     model.train()
     total_loss = 0
@@ -181,18 +164,7 @@ for epoch in range(start_epoch, args.epochs):
 
     scheduler.step(val_loss)
 
-    # Save latest checkpoint
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'best_val_loss': best_val_loss,
-        'counter': counter
-    }
-    ckpt_path = os.path.join(args.output_dir, 'latest_model.pt')
-    torch.save(checkpoint, ckpt_path)
-    wandb.save(ckpt_path)
+
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
