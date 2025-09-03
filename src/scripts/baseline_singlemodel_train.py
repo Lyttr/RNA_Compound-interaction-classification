@@ -201,18 +201,37 @@ loss_curve_path = os.path.join(args.output_dir, 'loss_curve.png')
 plt.savefig(loss_curve_path)
 wandb.log({"loss_curve": wandb.Image(loss_curve_path)})
 
+
+import csv
+
 plt.figure()
-fpr, tpr, _ = roc_curve(y_true, [x.item() for x in y_prob])
+scores = [float(x) for x in y_prob]
+fpr, tpr, thresholds = roc_curve(y_true, scores)
 plt.plot(fpr, tpr, label=f"AUC = {test_metrics['auc']:.4f}")
-plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("ROC Curve")
+plt.plot([0, 1], [0, 1], linestyle='--')
+plt.xlabel("FPR")
+plt.ylabel("TPR")
 plt.legend()
-plt.grid(True)
-roc_curve_path = os.path.join(args.output_dir, 'roc_curve.png')
-plt.savefig(roc_curve_path)
-wandb.log({"roc_curve": wandb.Image(roc_curve_path)})
+
+os.makedirs(args.output_dir, exist_ok=True)
+roc_path = os.path.join(args.output_dir, 'roc_curve.png')
+plt.savefig(roc_path)
+plt.close()
+
+roc_csv_path = os.path.join(args.output_dir, 'roc_curve_data.csv')
+with open(roc_csv_path, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['fpr', 'tpr', 'threshold'])
+    writer.writerows(zip(fpr, tpr, thresholds))
+
+roc_table = wandb.Table(columns=['fpr', 'tpr', 'threshold'])
+for row in zip(fpr, tpr, thresholds):
+    roc_table.add_data(*row)
+
+wandb.log({
+    "roc_curve": wandb.Image(roc_path),
+    "roc_curve_data": roc_table
+})
 
 plt.figure()
 cm = confusion_matrix(y_true, [(x > 0.5).long() for x in y_prob])
