@@ -81,7 +81,7 @@ def collate_fn(batch):
     tokens = tokens[:, :max_len]
     images = torch.stack(images)
     labels = torch.tensor(labels, dtype=torch.float)
-    return tokens, iamges, labels
+    return tokens, images, labels
 
 val_len = len(test_data) // 2
 test_len = len(test_data) - val_len
@@ -140,7 +140,7 @@ for epoch in range(start_epoch, args.epochs):
     y_val_true, y_val_prob = [], []
     with torch.no_grad():
         for tokens, images,  labels in val_loader:
-            tokens, images, labels = tokens.to(device), graphs.to(device), labels.to(device)
+            tokens, images, labels = tokens.to(device), images.to(device), labels.to(device)
             probs = model(tokens, images)
             loss = criterion(probs, labels.float())
             val_loss += loss.item()
@@ -186,8 +186,8 @@ if best_model_state:
 model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
-    for tokens, graphs,labels in test_loader:
-        tokens, graphs = tokens.to(device), graphs.to(device)
+    for tokens, images,labels in test_loader:
+        tokens, images = tokens.to(device), images.to(device)
         probs = model(tokens, graphs).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
