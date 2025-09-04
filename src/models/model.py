@@ -127,6 +127,24 @@ class RNAFM_GNN(nn.Module):
        
         combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
         return self.mlp(combined)
+class RNAFM_CNN(nn.Module):
+    def __init__(self, gnn_config,mlp_hidden_dim):
+        super(RNAFM_CNN, self).__init__()
+        data_dir = '../input/rnafm-tutorial/'
+        temp_model, alphabet = fm.pretrained.rna_fm_t12(Path(data_dir, 'RNA-FM_pretrained.pth'))
+    
+        self.fm_model=fm.BioBertModel(temp_model.args,alphabet)
+        self.cnn=ImageMol("ResNet18")
+
+        
+        self.mlp = MLP(input_dim=640+512, hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, image_data):
+        token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12]
+        token_embeddings = torch.max(token_embeddings, dim=1).values 
+        image_embeddings = self.cnn(image_data)
+        combined = torch.cat((token_embeddings, image_embeddings), dim=1)
+        return self.mlp(combined)
 class RNAFM_Drugchat(nn.Module):
     def __init__(self, gnn_config,mlp_hidden_dim):
         super(RNAFM_Drugchat, self).__init__()
