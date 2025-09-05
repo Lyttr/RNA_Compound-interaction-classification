@@ -131,7 +131,7 @@ for epoch in range(start_epoch, args.epochs):
     with torch.no_grad():
         for tokens, images,  labels in train_loader:
             tokens, images = tokens.to(device), images.to(device)
-            probs = model(tokens, graphs).cpu()
+            probs = model(tokens, images).cpu()
             y_tr_true.extend(labels)
             y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
@@ -188,7 +188,7 @@ y_true, y_prob = [], []
 with torch.no_grad():
     for tokens, images,labels in test_loader:
         tokens, images = tokens.to(device), images.to(device)
-        probs = model(tokens, graphs).cpu()
+        probs = model(tokens, images).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
 
