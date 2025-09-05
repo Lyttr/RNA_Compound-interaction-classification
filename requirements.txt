@@ -434,9 +434,7 @@ torch==2.5.1
 
 
 
-torchaudio==2.5.1+cu124
-torchmetrics==1.7.4
-torchvision==0.20.1+cu124
+
 tornado==6.4.2
 tqdm==4.67.1
 traitlets==5.14.3
