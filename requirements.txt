@@ -341,7 +341,7 @@ pydantic_core==2.27.2
 pydantic-settings==2.10.1
 pydot==3.0.4
 pyerfa==2.0.1.5
-pyg_lib==0.4.0+pt25cu124
+pyg_lib==0.4.0
 Pygments==2.19.1
 PyJWT==2.10.1
 pyparsing==3.2.1
