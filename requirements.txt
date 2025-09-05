@@ -429,7 +429,6 @@ tokenizers==0.21.2
 tomli==2.2.1
 tomlkit==0.13.3
 toolz==1.0.0
-torch==2.5.1
 
 
 
