@@ -178,7 +178,7 @@ class RNAFM_Drugchat_mean(nn.Module):
 
     def forward(self, tokens, graph_data,image_data):
         token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12]
-        token_embeddings = torch.mean(token_embeddings, dim=1).values 
+        token_embeddings = torch.mean(token_embeddings, dim=1)
         graph_embeddings = self.gnn(graph_data)    
         image_embeddings = self.cnn(image_data)
         combined = torch.cat((token_embeddings, graph_embeddings,image_embeddings), dim=1)
