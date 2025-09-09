@@ -118,14 +118,14 @@ class RNAFM_GNN(nn.Module):
         self.gnn = GNN_graphpred(**gnn_config)
 
         
-        self.mlp = MLP(input_dim=640+gnn_config['emb_dim'], hidden_dim=mlp_hidden_dim)
+        self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data):
         token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12]
         token_embeddings = torch.max(token_embeddings, dim=1).values 
         graph_embeddings = self.gnn(graph_data)    
-       
-        combined = torch.cat((token_embeddings, graph_embeddings), dim=1)
+        image_embeddings = torch.zeros(token_embeddings.size(0), 512, device=token_embeddings.device)
+        combined = torch.cat((token_embeddings, graph_embeddings,image_embeddings), dim=1)
         return self.mlp(combined)
 class RNAFM_CNN(nn.Module):
     def __init__(self, gnn_config,mlp_hidden_dim):
@@ -137,13 +137,14 @@ class RNAFM_CNN(nn.Module):
         self.cnn=ImageMol("ResNet18")
 
         
-        self.mlp = MLP(input_dim=640+512, hidden_dim=mlp_hidden_dim)
+        self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, image_data):
         token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12]
         token_embeddings = torch.max(token_embeddings, dim=1).values 
+        graph_embeddings = torch.zeros(token_embeddings.size(0), 300, device=token_embeddings.device)
         image_embeddings = self.cnn(image_data)
-        combined = torch.cat((token_embeddings, image_embeddings), dim=1)
+        combined = torch.cat((token_embeddings, graph_embeddings,image_embeddings), dim=1)
         return self.mlp(combined)
 class RNAFM_Drugchat(nn.Module):
     def __init__(self, gnn_config,mlp_hidden_dim):
