@@ -3,7 +3,6 @@ import torch
 import pickle
 from torch_geometric.data import Data
 
-# Load CSV and pickles
 train_df = pd.read_csv('datasets/trainset.csv')
 
 with open('raw/id_to_tokens.pkl', 'rb') as f:

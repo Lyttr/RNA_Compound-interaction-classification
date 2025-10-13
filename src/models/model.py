@@ -159,8 +159,8 @@ class RNAFM_Drugchat(nn.Module):
         self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
 
     def forward(self, tokens, graph_data,image_data):
-        token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12]
-        token_embeddings = torch.max(token_embeddings, dim=1).values 
+        token_embeddings = self.fm_model(tokens,repr_layers=[12])['representations'][12] #B,T,E
+        token_embeddings = torch.max(token_embeddings, dim=1).values #B,E
         graph_embeddings = self.gnn(graph_data)    
         image_embeddings = self.cnn(image_data)
         combined = torch.cat((token_embeddings, graph_embeddings,image_embeddings), dim=1)
@@ -183,4 +183,52 @@ class RNAFM_Drugchat_mean(nn.Module):
         graph_embeddings = self.gnn(graph_data)    
         image_embeddings = self.cnn(image_data)
         combined = torch.cat((token_embeddings, graph_embeddings,image_embeddings), dim=1)
+        return self.mlp(combined)
+
+class RNAFM_Drugchat_MultiRow(nn.Module):
+    """
+    处理多行RNA序列数据的模型
+    输入: tokens shape为 (B, L, T), 其中B=batch size, L=行数, T=token length
+    处理流程:
+    1. 对每行进行RNA-FM编码得到 (B, L, T, E)
+    2. 对每行在T维度做mean pooling得到 (B, L, E)
+    3. 对所有行在L维度做max pooling得到 (B, E)
+    4. 与GNN和CNN输出concat后通过MLP
+    """
+    def __init__(self, gnn_config, mlp_hidden_dim):
+        super(RNAFM_Drugchat_MultiRow, self).__init__()
+        data_dir = '../input/rnafm-tutorial/'
+        temp_model, alphabet = fm.pretrained.rna_fm_t12(Path(data_dir, 'RNA-FM_pretrained.pth'))
+    
+        self.fm_model = fm.BioBertModel(temp_model.args, alphabet)
+        self.gnn = GNN_graphpred(**gnn_config)
+        self.cnn = ImageMol("ResNet18")
+        self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
+
+    def forward(self, tokens, graph_data, image_data):
+        # tokens shape: (B, L, T) where B=batch, L=lines/rows, T=token_length
+        B, L, T = tokens.shape
+        
+        # Reshape to process all rows: (B*L, T)
+        tokens_reshaped = tokens.view(B * L, T)
+        
+        # Get RNA-FM embeddings for all rows: (B*L, T, E)
+        token_embeddings = self.fm_model(tokens_reshaped, repr_layers=[12])['representations'][12]
+        _, T_out, E = token_embeddings.shape
+        
+        # Reshape back to (B, L, T, E)
+        token_embeddings = token_embeddings.view(B, L, T_out, E)
+        
+        # Mean pooling over T dimension: (B, L, T, E) -> (B, L, E)
+        token_embeddings = torch.mean(token_embeddings, dim=2)
+        
+        # Max pooling over L dimension: (B, L, E) -> (B, E)
+        token_embeddings = torch.max(token_embeddings, dim=1).values
+        
+        # Get graph and image embeddings
+        graph_embeddings = self.gnn(graph_data)    
+        image_embeddings = self.cnn(image_data)
+        
+        # Concatenate and pass through MLP
+        combined = torch.cat((token_embeddings, graph_embeddings, image_embeddings), dim=1)
         return self.mlp(combined)

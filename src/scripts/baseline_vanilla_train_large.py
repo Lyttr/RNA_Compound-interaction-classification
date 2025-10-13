@@ -10,8 +10,9 @@ import seaborn as sns
 import wandb
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
-from src.models.model import RNAFM_Drugchat_mean
+from src.models.model import RNAFM_Drugchat_MultiRow
 
+# ------------------ Metric Function ------------------
 def get_metrics(y_true, y_pred_prob, threshold=0.5):
     y_pred = (y_pred_prob > threshold).long()
     y_true_np = y_true.tolist()
@@ -25,9 +26,11 @@ def get_metrics(y_true, y_pred_prob, threshold=0.5):
         "auc": roc_auc_score(y_true_np, y_prob_np)
     }
 
+# ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
-parser.add_argument('--train_path', type=str, required=True)
-parser.add_argument('--test_path', type=str, required=True)
+parser.add_argument('--train_path', type=str, default='datasets/trainset_large.pt')
+parser.add_argument('--val_path', type=str, default='datasets/valset_large.pt')
+parser.add_argument('--test_path', type=str, default='datasets/testset_large.pt')
 parser.add_argument('--output_dir', type=str, default='outputs')
 parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('--lr', type=float, default=1e-4)
@@ -59,8 +62,15 @@ wandb.init(
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+# Load datasets
+print(f"Loading train data from: {args.train_path}")
 train_data = torch.load(args.train_path)
+print(f"Loading validation data from: {args.val_path}")
+val_data = torch.load(args.val_path)
+print(f"Loading test data from: {args.test_path}")
 test_data = torch.load(args.test_path)
+
+print(f"Dataset sizes - Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
 
 class MultiModalDataset(torch.utils.data.Dataset):
     def __init__(self, data):
@@ -73,23 +83,17 @@ class MultiModalDataset(torch.utils.data.Dataset):
 def collate_fn(batch):
     tokens, graphs, images, labels = zip(*batch)
     tokens = torch.stack(tokens)
-    pad_token_id = 1
-    lengths = (tokens != pad_token_id).sum(dim=1)
-    max_len = lengths.max()
-    tokens = tokens[:, :max_len]
     graphs = Batch.from_data_list(graphs)
     images = torch.stack(images)
     labels = torch.tensor(labels, dtype=torch.float)
     return tokens, graphs, images, labels
 
-val_len = len(test_data) // 2
-test_len = len(test_data) - val_len
-val_dataset, test_dataset = random_split(test_data, [val_len, test_len], generator=torch.Generator().manual_seed(42))
-
+# Create data loaders
 train_loader = DataLoader(MultiModalDataset(train_data), batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
-test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
+val_loader = DataLoader(MultiModalDataset(val_data), batch_size=args.batch_size, collate_fn=collate_fn)
+test_loader = DataLoader(MultiModalDataset(test_data), batch_size=args.batch_size, collate_fn=collate_fn)
 
+# ------------------ Model ------------------
 gnn_config = {
     "num_layer": 5,
     "emb_dim": 300,
@@ -98,12 +102,14 @@ gnn_config = {
     "graph_pooling": "attention",
     "gnn_type": "gin"
 }
-model = RNAFM_Drugchat_mean(gnn_config=gnn_config, mlp_hidden_dim=args.mlp_hidden_dim).to(device)
+model = RNAFM_Drugchat_MultiRow(gnn_config=gnn_config, mlp_hidden_dim=args.mlp_hidden_dim).to(device)
 
+# ------------------ Loss, Optimizer ------------------
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
+# ------------------ Resume Checkpoint ------------------
 start_epoch = 0
 best_val_loss = float('inf')
 counter = 0
@@ -171,14 +177,14 @@ for epoch in range(start_epoch, args.epochs):
             print("Early stopping triggered.")
             break
 
-
+# Save best model
 if best_model_state:
     model.load_state_dict(best_model_state)
     best_model_path = os.path.join(args.output_dir, 'best_model.pt')
     torch.save({'model_state_dict': best_model_state}, best_model_path)
     wandb.save(best_model_path)
 
-
+# ------------------ Evaluation ------------------
 model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
@@ -192,6 +198,8 @@ test_metrics = get_metrics(torch.tensor(y_true), torch.stack(y_prob))
 for k, v in test_metrics.items():
     print(f"{k:10}: {v:.4f}")
 wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
+
+# ------------------ Plots ------------------
 plt.figure()
 plt.plot(train_losses, label='Train')
 plt.plot(val_losses, label='Val')

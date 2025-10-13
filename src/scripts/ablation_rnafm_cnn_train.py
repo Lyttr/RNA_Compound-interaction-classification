@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
 from src.models.model import RNAFM_CNN
 
-# ------------------ Metric Function ------------------
 def get_metrics(y_true, y_pred_prob, threshold=0.5):
     y_pred = (y_pred_prob > threshold).long()
     y_true_np = y_true.tolist()
@@ -26,7 +25,6 @@ def get_metrics(y_true, y_pred_prob, threshold=0.5):
         "auc": roc_auc_score(y_true_np, y_prob_np)
     }
 
-# ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
 parser.add_argument('--train_path', type=str, required=True)
 parser.add_argument('--test_path', type=str, required=True)
@@ -91,7 +89,6 @@ train_loader = DataLoader(MultiModalDataset(train_data), batch_size=args.batch_s
 val_loader = DataLoader(val_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, collate_fn=collate_fn)
 
-# ------------------ Model ------------------
 gnn_config = {
     "num_layer": 5,
     "emb_dim": 300,
@@ -102,12 +99,10 @@ gnn_config = {
 }
 model = RNAFM_CNN(gnn_config=gnn_config, mlp_hidden_dim=args.mlp_hidden_dim).to(device)
 
-# ------------------ Loss, Optimizer ------------------
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
-# ------------------ Resume Checkpoint ------------------
 start_epoch = 0
 best_val_loss = float('inf')
 counter = 0
@@ -182,7 +177,6 @@ if best_model_state:
     torch.save({'model_state_dict': best_model_state}, best_model_path)
     wandb.save(best_model_path)
 
-# ------------------ Evaluation ------------------
 model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
@@ -197,7 +191,6 @@ for k, v in test_metrics.items():
     print(f"{k:10}: {v:.4f}")
 wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
 
-# ------------------ Plots ------------------
 plt.figure()
 plt.plot(train_losses, label='Train')
 plt.plot(val_losses, label='Val')

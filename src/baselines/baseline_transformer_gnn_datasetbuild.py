@@ -3,7 +3,6 @@ import torch
 import pickle
 from torch_geometric.data import Data
 
-# Load CSV and pickles
 train_df = pd.read_csv('datasets/trainset.csv')
 
 with open('raw/id_to_tokens.pkl', 'rb') as f:
@@ -19,7 +18,6 @@ def create_dataset(df):
         id1, id2 = row['Raw_ID1'], row['Raw_ID2']
         label = torch.tensor(row['label'], dtype=torch.long)
 
-        # --- Tokens ---
         tokens_feat = torch.tensor(tokens_dict[id1], dtype=torch.long)
         if tokens_feat.size(0) > MAX_TOKEN_LENGTH:
             tokens_feat = tokens_feat[:MAX_TOKEN_LENGTH]

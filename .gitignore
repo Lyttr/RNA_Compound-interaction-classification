@@ -16,6 +16,11 @@ raw/*.pkl
 datasets/*.pt
 wandb/
 results/**/*.pt
+test_text.csv
+val_text.csv
+train_text.csv
+RNA_FM/
+
 # Distribution / packaging
 .Python
 build/
