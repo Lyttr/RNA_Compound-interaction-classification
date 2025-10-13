@@ -19,7 +19,7 @@ results/**/*.pt
 test_text.csv
 val_text.csv
 train_text.csv
-RNA_FM/
+RNA-FM/
 
 # Distribution / packaging
 .Python
