@@ -194,8 +194,12 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
     2. 对每行在T维度做mean pooling得到 (B, L, E)
     3. 对所有行在L维度做max pooling得到 (B, E)
     4. 与GNN和CNN输出concat后通过MLP
+    
+    显存优化:
+    - use_gradient_checkpointing: 启用梯度检查点，降低50-70%显存
+    - chunk_size: 分块处理多行数据，避免一次性处理B*L
     """
-    def __init__(self, gnn_config, mlp_hidden_dim):
+    def __init__(self, gnn_config, mlp_hidden_dim, use_gradient_checkpointing=False, chunk_size=None):
         super(RNAFM_Drugchat_MultiRow, self).__init__()
         data_dir = '../input/rnafm-tutorial/'
         temp_model, alphabet = fm.pretrained.rna_fm_t12(Path(data_dir, 'RNA-FM_pretrained.pth'))
@@ -204,26 +208,58 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         self.gnn = GNN_graphpred(**gnn_config)
         self.cnn = ImageMol("ResNet18")
         self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
+        
+        # 梯度检查点配置
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        if use_gradient_checkpointing and hasattr(self.fm_model, 'gradient_checkpointing_enable'):
+            self.fm_model.gradient_checkpointing_enable()
+        
+        # 分块处理配置
+        self.chunk_size = chunk_size
 
     def forward(self, tokens, graph_data, image_data):
         # tokens shape: (B, L, T) where B=batch, L=lines/rows, T=token_length
         B, L, T = tokens.shape
         
-        # Reshape to process all rows: (B*L, T)
-        tokens_reshaped = tokens.view(B * L, T)
-        
-        # Get RNA-FM embeddings for all rows: (B*L, T, E)
-        token_embeddings = self.fm_model(tokens_reshaped, repr_layers=[12])['representations'][12]
-        _, T_out, E = token_embeddings.shape
-        
-        # Reshape back to (B, L, T, E)
-        token_embeddings = token_embeddings.view(B, L, T_out, E)
-        
-        # Mean pooling over T dimension: (B, L, T, E) -> (B, L, E)
-        token_embeddings = torch.mean(token_embeddings, dim=2)
-        
-        # Max pooling over L dimension: (B, L, E) -> (B, E)
-        token_embeddings = torch.max(token_embeddings, dim=1).values
+        # 如果启用分块处理，避免一次性处理 B*L 的大batch
+        if self.chunk_size is not None and L > self.chunk_size:
+            # 分块处理每个样本的多行数据
+            all_embeddings = []
+            for b in range(B):
+                row_embeddings = []
+                for chunk_start in range(0, L, self.chunk_size):
+                    chunk_end = min(chunk_start + self.chunk_size, L)
+                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]  # (chunk_size, T)
+                    
+                    # 处理当前chunk
+                    chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
+                    # Mean pooling over T: (chunk_size, T, E) -> (chunk_size, E)
+                    chunk_emb = torch.mean(chunk_emb, dim=1)
+                    row_embeddings.append(chunk_emb)
+                
+                # 合并所有chunks: (L, E)
+                sample_embeddings = torch.cat(row_embeddings, dim=0)
+                # Max pooling over L: (L, E) -> (E,)
+                sample_embeddings = torch.max(sample_embeddings, dim=0).values
+                all_embeddings.append(sample_embeddings)
+            
+            token_embeddings = torch.stack(all_embeddings)  # (B, E)
+        else:
+            # 原始处理方式：一次性处理所有行
+            tokens_reshaped = tokens.view(B * L, T)
+            
+            # Get RNA-FM embeddings for all rows: (B*L, T, E)
+            token_embeddings = self.fm_model(tokens_reshaped, repr_layers=[12])['representations'][12]
+            _, T_out, E = token_embeddings.shape
+            
+            # Reshape back to (B, L, T, E)
+            token_embeddings = token_embeddings.view(B, L, T_out, E)
+            
+            # Mean pooling over T dimension: (B, L, T, E) -> (B, L, E)
+            token_embeddings = torch.mean(token_embeddings, dim=2)
+            
+            # Max pooling over L dimension: (B, L, E) -> (B, E)
+            token_embeddings = torch.max(token_embeddings, dim=1).values
         
         # Get graph and image embeddings
         graph_embeddings = self.gnn(graph_data)    

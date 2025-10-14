@@ -11,6 +11,7 @@ import wandb
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
 from src.models.model import RNAFM_Drugchat_MultiRow
+from torch.cuda.amp import autocast, GradScaler
 
 # ------------------ Metric Function ------------------
 def get_metrics(y_true, y_pred_prob, threshold=0.5):
@@ -39,6 +40,11 @@ parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='fusion-rnafm')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
+
+# 显存优化参数
+parser.add_argument('--use_amp', action='store_true', help='使用混合精度训练(AMP)，降低约50%显存')
+parser.add_argument('--gradient_checkpointing', action='store_true')
+parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
 
 args = parser.parse_args()
 
@@ -102,12 +108,31 @@ gnn_config = {
     "graph_pooling": "attention",
     "gnn_type": "gin"
 }
-model = RNAFM_Drugchat_MultiRow(gnn_config=gnn_config, mlp_hidden_dim=args.mlp_hidden_dim).to(device)
+model = RNAFM_Drugchat_MultiRow(
+    gnn_config=gnn_config, 
+    mlp_hidden_dim=args.mlp_hidden_dim,
+    use_gradient_checkpointing=args.gradient_checkpointing,
+    chunk_size=args.chunk_size
+).to(device)
+
+# 打印显存优化配置
+print(f"\n{'='*50}")
+print(f"显存优化配置:")
+print(f"  混合精度训练 (AMP): {args.use_amp}")
+print(f"  梯度检查点: {args.gradient_checkpointing}")
+print(f"  分块大小: {args.chunk_size if args.chunk_size else '不分块'}")
+print(f"  梯度累积步数: {args.gradient_accumulation_steps}")
+print(f"  Batch Size: {args.batch_size}")
+print(f"  等效 Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
+print(f"{'='*50}\n")
 
 # ------------------ Loss, Optimizer ------------------
 criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+
+# 混合精度训练的 GradScaler
+scaler = GradScaler() if args.use_amp else None
 
 # ------------------ Resume Checkpoint ------------------
 start_epoch = 0
@@ -118,14 +143,40 @@ train_losses, val_losses = [], []
 for epoch in range(start_epoch, args.epochs):
     model.train()
     total_loss = 0
-    for tokens, graphs, images, labels in train_loader:
+    optimizer.zero_grad()  # 移到外层，用于梯度累积
+    
+    for batch_idx, (tokens, graphs, images, labels) in enumerate(train_loader):
         tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        output = model(tokens, graphs, images)
-        loss = criterion(output, labels.float())
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+        
+        # 使用混合精度训练
+        if args.use_amp:
+            with autocast():
+                output = model(tokens, graphs, images)
+                loss = criterion(output, labels.float())
+                # 梯度累积：loss需要除以累积步数
+                loss = loss / args.gradient_accumulation_steps
+            
+            scaler.scale(loss).backward()
+            
+            # 每accumulation_steps步或最后一个batch才更新参数
+            if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+        else:
+            # 不使用混合精度
+            output = model(tokens, graphs, images)
+            loss = criterion(output, labels.float())
+            loss = loss / args.gradient_accumulation_steps
+            
+            loss.backward()
+            
+            if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                optimizer.step()
+                optimizer.zero_grad()
+        
+        total_loss += loss.item() * args.gradient_accumulation_steps  # 还原真实loss
+    
     total_loss /= len(train_loader)
 
     model.eval()
@@ -133,7 +184,11 @@ for epoch in range(start_epoch, args.epochs):
     with torch.no_grad():
         for tokens, graphs, images, labels in train_loader:
             tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
-            probs = model(tokens, graphs, images).cpu()
+            if args.use_amp:
+                with autocast():
+                    probs = model(tokens, graphs, images).cpu()
+            else:
+                probs = model(tokens, graphs, images).cpu()
             y_tr_true.extend(labels)
             y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
@@ -143,8 +198,13 @@ for epoch in range(start_epoch, args.epochs):
     with torch.no_grad():
         for tokens, graphs, images, labels in val_loader:
             tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
-            probs = model(tokens, graphs, images)
-            loss = criterion(probs, labels.float())
+            if args.use_amp:
+                with autocast():
+                    probs = model(tokens, graphs, images)
+                    loss = criterion(probs, labels.float())
+            else:
+                probs = model(tokens, graphs, images)
+                loss = criterion(probs, labels.float())
             val_loss += loss.item()
             y_val_true.extend(labels.cpu())
             y_val_prob.extend(probs.cpu())
@@ -190,7 +250,11 @@ y_true, y_prob = [], []
 with torch.no_grad():
     for tokens, graphs, images, labels in test_loader:
         tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
-        probs = model(tokens, graphs, images).cpu()
+        if args.use_amp:
+            with autocast():
+                probs = model(tokens, graphs, images).cpu()
+        else:
+            probs = model(tokens, graphs, images).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
 
