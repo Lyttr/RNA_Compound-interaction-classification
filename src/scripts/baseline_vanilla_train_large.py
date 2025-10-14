@@ -42,7 +42,8 @@ parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
 
 # 显存优化参数
-parser.add_argument('--use_amp', action='store_true', help='使用混合精度训练(AMP)，降低约50%显存')
+parser.add_argument('--use_amp', action='store_true')
+parser.add_argument('--chunk_size', type=int, default=2)
 parser.add_argument('--gradient_checkpointing', action='store_true')
 parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
 
