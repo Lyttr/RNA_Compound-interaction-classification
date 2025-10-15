@@ -218,9 +218,17 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         self.chunk_size = chunk_size
 
     def forward(self, tokens, graph_data, image_data):
+        """
+        在模型内部管理数据转移到GPU，实现更精细的显存控制
+        输入可以是CPU或GPU上的数据
+        """
+        # 获取模型所在的device
+        device = next(self.parameters()).device
+        
         # tokens shape: (B, L, T) where B=batch, L=lines/rows, T=token_length
         B, L, T = tokens.shape
         
+        # Step 1: 处理 RNA tokens (按需转移到GPU)
         # 如果启用分块处理，避免一次性处理 B*L 的大batch
         if self.chunk_size is not None and L > self.chunk_size:
             # 分块处理每个样本的多行数据
@@ -229,14 +237,20 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                 row_embeddings = []
                 for chunk_start in range(0, L, self.chunk_size):
                     chunk_end = min(chunk_start + self.chunk_size, L)
-                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]  # (chunk_size, T)
+                    # 只转移当前chunk到GPU
+                    chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
                     
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
-                    row_embeddings.append(chunk_emb)
+                    row_embeddings.append(chunk_emb.cpu())  # 立即移回CPU节省显存
+                    
+                    # 清理GPU显存
+                    del chunk_tokens
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
                 
-                # 合并所有chunks: (L, T, E)
-                sample_embeddings = torch.cat(row_embeddings, dim=0)
+                # 合并所有chunks并转移到GPU: (L, T, E)
+                sample_embeddings = torch.cat(row_embeddings, dim=0).to(device)
                 # Mean pooling over L: (L, T, E) -> (T, E)
                 sample_embeddings = torch.mean(sample_embeddings, dim=0)
                 # Max pooling over T: (T, E) -> (E,)
@@ -246,6 +260,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
             token_embeddings = torch.stack(all_embeddings)  # (B, E)
         else:
             # 原始处理方式：一次性处理所有行
+            tokens = tokens.to(device)  # 转移到GPU
             tokens_reshaped = tokens.view(B * L, T)
             
             # Get RNA-FM embeddings for all rows: (B*L, T, E)
@@ -261,10 +276,14 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
             # Max pooling over T dimension: (B, T, E) -> (B, E)
             token_embeddings = torch.max(token_embeddings, dim=1).values
         
-        # Get graph and image embeddings
-        graph_embeddings = self.gnn(graph_data)    
+        # Step 2: 处理 GNN (转移graph数据到GPU)
+        graph_data = graph_data.to(device)
+        graph_embeddings = self.gnn(graph_data)
+        
+        # Step 3: 处理 CNN (转移image数据到GPU)
+        image_data = image_data.to(device)
         image_embeddings = self.cnn(image_data)
         
-        # Concatenate and pass through MLP
+        # Step 4: 合并并通过MLP
         combined = torch.cat((token_embeddings, graph_embeddings, image_embeddings), dim=1)
         return self.mlp(combined)

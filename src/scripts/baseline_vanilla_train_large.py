@@ -33,7 +33,7 @@ parser.add_argument('--train_path', type=str, default='datasets/trainset_large.p
 parser.add_argument('--val_path', type=str, default='datasets/valset_large.pt')
 parser.add_argument('--test_path', type=str, default='datasets/testset_large.pt')
 parser.add_argument('--output_dir', type=str, default='outputs')
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--epochs', type=int, default=50)
 parser.add_argument('--patience', type=int, default=5)
@@ -41,11 +41,11 @@ parser.add_argument('--project', type=str, default='fusion-rnafm')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
 
-# 显存优化参数
+# 显存优化参数 (建议全部启用)
 parser.add_argument('--use_amp', action='store_true')
-parser.add_argument('--chunk_size', type=int, default=2)
+parser.add_argument('--chunk_size', type=int, default=1)
 parser.add_argument('--gradient_checkpointing', action='store_true')
-parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
+parser.add_argument('--gradient_accumulation_steps', type=int, default=8)
 
 args = parser.parse_args()
 
@@ -148,12 +148,14 @@ for epoch in range(start_epoch, args.epochs):
     optimizer.zero_grad()  # 移到外层，用于梯度累积
     
     for batch_idx, (tokens, graphs, images, labels) in enumerate(train_loader):
-        tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
+        # 数据保持在CPU，由模型内部按需转移到GPU
+        # 只有labels需要转移到device用于计算loss
+        labels = labels.to(device)
         
         # 使用混合精度训练
         if args.use_amp:
             with autocast():
-                output = model(tokens, graphs, images)
+                output = model(tokens, graphs, images)  # 模型内部处理数据转移
                 loss = criterion(output, labels.float())
                 # 梯度累积：loss需要除以累积步数
                 loss = loss / args.gradient_accumulation_steps
@@ -167,7 +169,7 @@ for epoch in range(start_epoch, args.epochs):
                 optimizer.zero_grad()
         else:
             # 不使用混合精度
-            output = model(tokens, graphs, images)
+            output = model(tokens, graphs, images)  # 模型内部处理数据转移
             loss = criterion(output, labels.float())
             loss = loss / args.gradient_accumulation_steps
             
@@ -185,7 +187,7 @@ for epoch in range(start_epoch, args.epochs):
     y_tr_true, y_tr_prob = [], []
     with torch.no_grad():
         for tokens, graphs, images, labels in train_loader:
-            tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
+            # 数据保持在CPU，模型内部处理转移
             if args.use_amp:
                 with autocast():
                     logits = model(tokens, graphs, images)
@@ -201,14 +203,15 @@ for epoch in range(start_epoch, args.epochs):
     y_val_true, y_val_prob = [], []
     with torch.no_grad():
         for tokens, graphs, images, labels in val_loader:
-            tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
+            # 只有labels需要在device上用于计算loss
+            labels = labels.to(device)
             if args.use_amp:
                 with autocast():
-                    logits = model(tokens, graphs, images)
+                    logits = model(tokens, graphs, images)  # 模型内部处理数据转移
                     loss = criterion(logits, labels.float())
                     probs = torch.sigmoid(logits)
             else:
-                logits = model(tokens, graphs, images)
+                logits = model(tokens, graphs, images)  # 模型内部处理数据转移
                 loss = criterion(logits, labels.float())
                 probs = torch.sigmoid(logits)
             val_loss += loss.item()
@@ -255,7 +258,7 @@ model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
     for tokens, graphs, images, labels in test_loader:
-        tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
+        # 数据保持在CPU，模型内部处理转移
         if args.use_amp:
             with autocast():
                 logits = model(tokens, graphs, images)
