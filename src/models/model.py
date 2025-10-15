@@ -191,8 +191,8 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
     输入: tokens shape为 (B, L, T), 其中B=batch size, L=行数, T=token length
     处理流程:
     1. 对每行进行RNA-FM编码得到 (B, L, T, E)
-    2. 对每行在T维度做mean pooling得到 (B, L, E)
-    3. 对所有行在L维度做max pooling得到 (B, E)
+    2. 先在L维度做mean pooling得到 (B, T, E)
+    3. 再在T维度做max pooling得到 (B, E)
     4. 与GNN和CNN输出concat后通过MLP
     
     显存优化:
@@ -231,15 +231,15 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     chunk_end = min(chunk_start + self.chunk_size, L)
                     chunk_tokens = tokens[b, chunk_start:chunk_end, :]  # (chunk_size, T)
                     
-                    # 处理当前chunk
+                    # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
-                    # Mean pooling over T: (chunk_size, T, E) -> (chunk_size, E)
-                    chunk_emb = torch.mean(chunk_emb, dim=1)
                     row_embeddings.append(chunk_emb)
                 
-                # 合并所有chunks: (L, E)
+                # 合并所有chunks: (L, T, E)
                 sample_embeddings = torch.cat(row_embeddings, dim=0)
-                # Max pooling over L: (L, E) -> (E,)
+                # Mean pooling over L: (L, T, E) -> (T, E)
+                sample_embeddings = torch.mean(sample_embeddings, dim=0)
+                # Max pooling over T: (T, E) -> (E,)
                 sample_embeddings = torch.max(sample_embeddings, dim=0).values
                 all_embeddings.append(sample_embeddings)
             
@@ -255,10 +255,10 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
             # Reshape back to (B, L, T, E)
             token_embeddings = token_embeddings.view(B, L, T_out, E)
             
-            # Mean pooling over T dimension: (B, L, T, E) -> (B, L, E)
-            token_embeddings = torch.mean(token_embeddings, dim=2)
+            # Mean pooling over L dimension: (B, L, T, E) -> (B, T, E)
+            token_embeddings = torch.mean(token_embeddings, dim=1)
             
-            # Max pooling over L dimension: (B, L, E) -> (B, E)
+            # Max pooling over T dimension: (B, T, E) -> (B, E)
             token_embeddings = torch.max(token_embeddings, dim=1).values
         
         # Get graph and image embeddings

@@ -128,7 +128,8 @@ print(f"  等效 Batch Size: {args.batch_size * args.gradient_accumulation_steps
 print(f"{'='*50}\n")
 
 # ------------------ Loss, Optimizer ------------------
-criterion = nn.BCELoss()
+# 使用 BCEWithLogitsLoss 代替 BCELoss，因为它在混合精度训练中更安全
+criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
@@ -187,9 +188,11 @@ for epoch in range(start_epoch, args.epochs):
             tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
             if args.use_amp:
                 with autocast():
-                    probs = model(tokens, graphs, images).cpu()
+                    logits = model(tokens, graphs, images)
+                    probs = torch.sigmoid(logits).cpu()
             else:
-                probs = model(tokens, graphs, images).cpu()
+                logits = model(tokens, graphs, images)
+                probs = torch.sigmoid(logits).cpu()
             y_tr_true.extend(labels)
             y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
@@ -201,11 +204,13 @@ for epoch in range(start_epoch, args.epochs):
             tokens, graphs, images, labels = tokens.to(device), graphs.to(device), images.to(device), labels.to(device)
             if args.use_amp:
                 with autocast():
-                    probs = model(tokens, graphs, images)
-                    loss = criterion(probs, labels.float())
+                    logits = model(tokens, graphs, images)
+                    loss = criterion(logits, labels.float())
+                    probs = torch.sigmoid(logits)
             else:
-                probs = model(tokens, graphs, images)
-                loss = criterion(probs, labels.float())
+                logits = model(tokens, graphs, images)
+                loss = criterion(logits, labels.float())
+                probs = torch.sigmoid(logits)
             val_loss += loss.item()
             y_val_true.extend(labels.cpu())
             y_val_prob.extend(probs.cpu())
@@ -253,9 +258,11 @@ with torch.no_grad():
         tokens, graphs, images = tokens.to(device), graphs.to(device), images.to(device)
         if args.use_amp:
             with autocast():
-                probs = model(tokens, graphs, images).cpu()
+                logits = model(tokens, graphs, images)
+                probs = torch.sigmoid(logits).cpu()
         else:
-            probs = model(tokens, graphs, images).cpu()
+            logits = model(tokens, graphs, images)
+            probs = torch.sigmoid(logits).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
 
