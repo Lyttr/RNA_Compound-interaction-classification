@@ -244,10 +244,10 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     print(chunk_tokens.shape)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
-                    row_embeddings.append(chunk_emb.cpu())  # 立即移回CPU节省显存
+                    row_embeddings.append(chunk_emb.cpu())  # 创建CPU副本
                     
-                    # 清理GPU显存
-                    del chunk_tokens
+                    # 清理GPU显存：显式删除GPU tensor
+                    del chunk_tokens, chunk_emb  # 必须删除chunk_emb！
                     if device.type == 'cuda':
                         torch.cuda.empty_cache()
                 
