@@ -241,6 +241,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
                     
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
+                    print(chunk_tokens.shape)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
                     row_embeddings.append(chunk_emb.cpu())  # 立即移回CPU节省显存
                     
