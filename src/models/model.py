@@ -254,22 +254,30 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
                     print(f"Processing chunk {chunk_start}:{chunk_end}, shape: {chunk_tokens.shape}, device: {chunk_tokens.device}")
                     print_gpu_memory()
-                    # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
-                    chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
-                    row_embeddings.append(chunk_emb.cpu())  # 创建CPU副本
                     
-                    # 清理GPU显存：显式删除GPU tensor
-                    del chunk_tokens, chunk_emb  # 必须删除chunk_emb！
+                    # 处理当前chunk并立即pooling，减少显存占用
+                    # (chunk_size, T) -> (chunk_size, T, E) -> (chunk_size, E)
+                    chunk_emb_gpu = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
+                    
+                    # 立即在T维度做max pooling: (chunk_size, T, E) -> (chunk_size, E)
+                    chunk_emb_pooled = torch.max(chunk_emb_gpu, dim=1).values
+                    
+                    # 移到CPU
+                    row_embeddings.append(chunk_emb_pooled.detach().cpu())
+                    
+                    # 清理GPU显存：显式删除所有GPU tensor
+                    del chunk_tokens, chunk_emb_gpu, chunk_emb_pooled
                     if device.type == 'cuda':
                         torch.cuda.empty_cache()
                 
-                # 合并所有chunks并转移到GPU: (L, T, E)
-                sample_embeddings = torch.cat(row_embeddings, dim=0).to(device)
-                # Mean pooling over L: (L, T, E) -> (T, E)
+                # 合并所有chunks: (L, E)
+                sample_embeddings = torch.stack(row_embeddings).to(device)
+                # Mean pooling over L: (L, E) -> (E,)
                 sample_embeddings = torch.mean(sample_embeddings, dim=0)
-                # Max pooling over T: (T, E) -> (E,)
-                sample_embeddings = torch.max(sample_embeddings, dim=0).values
                 all_embeddings.append(sample_embeddings)
+                
+                # 清理CPU tensor
+                del row_embeddings, sample_embeddings
             
             token_embeddings = torch.stack(all_embeddings)  # (B, E)
         else:
