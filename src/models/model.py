@@ -231,6 +231,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         # Step 1: 处理 RNA tokens (按需转移到GPU)
         # 如果启用分块处理，避免一次性处理 B*L 的大batch
         print(tokens.shape)
+        tokens = tokens.to(device)
         if self.chunk_size is not None and L > self.chunk_size:
             # 分块处理每个样本的多行数据
             all_embeddings = []
@@ -239,7 +240,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                 for chunk_start in range(0, L, self.chunk_size):
                     chunk_end = min(chunk_start + self.chunk_size, L)
                     # 只转移当前chunk到GPU
-                    chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
+                    #chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
                     
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     print(chunk_tokens.shape)
