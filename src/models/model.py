@@ -240,7 +240,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                 for chunk_start in range(0, L, self.chunk_size):
                     chunk_end = min(chunk_start + self.chunk_size, L)
                     # 只转移当前chunk到GPU
-                    #chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
+                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]
                     
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     print(chunk_tokens.shape)
