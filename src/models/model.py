@@ -240,6 +240,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         # Step 1: 处理 RNA tokens (按需转移到GPU)
         # 如果启用分块处理，避免一次性处理 B*L 的大batch
         print(f"tokens.shape: {tokens.shape}, device: {tokens.device}")
+        tokens = tokens.to(device)
         print_gpu_memory()
         if self.chunk_size is not None and L > self.chunk_size:
             # 分块处理每个样本的多行数据
@@ -251,7 +252,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     chunk_end = min(chunk_start + self.chunk_size, L)
                     
                     # 关键：从CPU切片后再转到GPU，避免整个tokens占用GPU
-                    chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
+                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]
                     print(f"Processing chunk {chunk_start}:{chunk_end}, shape: {chunk_tokens.shape}, device: {chunk_tokens.device}")
                     print_gpu_memory()
                     
@@ -262,6 +263,10 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     # 立即在T维度做max pooling: (chunk_size, T, E) -> (chunk_size, E)
                     chunk_emb_pooled = torch.max(chunk_emb_gpu, dim=1).values
                     
+                    # 如果chunk_size=1，squeeze掉batch维度: (1, E) -> (E,)
+                    if chunk_emb_pooled.shape[0] == 1:
+                        chunk_emb_pooled = chunk_emb_pooled.squeeze(0)
+                    
                     # 移到CPU
                     row_embeddings.append(chunk_emb_pooled.detach().cpu())
                     
@@ -270,8 +275,14 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     if device.type == 'cuda':
                         torch.cuda.empty_cache()
                 
-                # 合并所有chunks: (L, E)
-                sample_embeddings = torch.stack(row_embeddings).to(device)
+                # 合并所有chunks: (L, E) 或每个chunk是(E,)则stack后是(L, E)
+                if len(row_embeddings) > 0 and row_embeddings[0].dim() == 1:
+                    # 每个是(E,), stack后是(L, E)
+                    sample_embeddings = torch.stack(row_embeddings).to(device)
+                else:
+                    # 每个是(chunk_size, E), cat后是(L, E)
+                    sample_embeddings = torch.cat(row_embeddings, dim=0).to(device)
+                
                 # Mean pooling over L: (L, E) -> (E,)
                 sample_embeddings = torch.mean(sample_embeddings, dim=0)
                 all_embeddings.append(sample_embeddings)
