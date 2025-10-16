@@ -253,7 +253,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     # 关键：从CPU切片后再转到GPU，避免整个tokens占用GPU
                     chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
                     print(f"Processing chunk {chunk_start}:{chunk_end}, shape: {chunk_tokens.shape}, device: {chunk_tokens.device}")
-                    
+                    print_gpu_memory()
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
                     row_embeddings.append(chunk_emb.cpu())  # 创建CPU副本
