@@ -7,6 +7,15 @@ from src.models.image_mol import ImageMol
 import numpy as np
 import fm
 from pathlib import Path
+def print_gpu_memory(prefix=""):
+    """打印当前GPU显存使用情况"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+        print(f"{prefix}GPU Memory: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB, Max={max_allocated:.2f}GB")
+        return allocated, reserved, max_allocated
+    return 0, 0, 0
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim=1024):
         super(MLP, self).__init__()
@@ -230,20 +239,22 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         
         # Step 1: 处理 RNA tokens (按需转移到GPU)
         # 如果启用分块处理，避免一次性处理 B*L 的大batch
-        print(tokens.shape)
-        tokens = tokens.to(device)
+        print(f"tokens.shape: {tokens.shape}, device: {tokens.device}")
+        print_gpu_memory()
         if self.chunk_size is not None and L > self.chunk_size:
             # 分块处理每个样本的多行数据
+            # 关键：tokens保持在CPU，只转移当前chunk到GPU
             all_embeddings = []
             for b in range(B):
                 row_embeddings = []
                 for chunk_start in range(0, L, self.chunk_size):
                     chunk_end = min(chunk_start + self.chunk_size, L)
-                    # 只转移当前chunk到GPU
-                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]
+                    
+                    # 关键：从CPU切片后再转到GPU，避免整个tokens占用GPU
+                    chunk_tokens = tokens[b, chunk_start:chunk_end, :].to(device)
+                    print(f"Processing chunk {chunk_start}:{chunk_end}, shape: {chunk_tokens.shape}, device: {chunk_tokens.device}")
                     
                     # 处理当前chunk: (chunk_size, T) -> (chunk_size, T, E)
-                    print(chunk_tokens.shape)
                     chunk_emb = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
                     row_embeddings.append(chunk_emb.cpu())  # 创建CPU副本
                     

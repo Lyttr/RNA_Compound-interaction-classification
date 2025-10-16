@@ -27,6 +27,27 @@ def get_metrics(y_true, y_pred_prob, threshold=0.5):
         "auc": roc_auc_score(y_true_np, y_prob_np)
     }
 
+# ------------------ GPU Memory Monitoring ------------------
+def print_gpu_memory(prefix=""):
+    """打印当前GPU显存使用情况"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+        print(f"{prefix}GPU Memory: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB, Max={max_allocated:.2f}GB")
+        return allocated, reserved, max_allocated
+    return 0, 0, 0
+
+def get_gpu_memory_dict():
+    """返回GPU显存字典，用于wandb记录"""
+    if torch.cuda.is_available():
+        return {
+            "gpu_allocated_gb": torch.cuda.memory_allocated() / 1024**3,
+            "gpu_reserved_gb": torch.cuda.memory_reserved() / 1024**3,
+            "gpu_max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3
+        }
+    return {}
+
 # ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
 parser.add_argument('--train_path', type=str, default='datasets/trainset_large.pt')
@@ -127,6 +148,9 @@ print(f"  Batch Size: {args.batch_size}")
 print(f"  等效 Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
 print(f"{'='*50}\n")
 
+# 显示初始显存状态
+print_gpu_memory("Initial ")
+
 # ------------------ Loss, Optimizer ------------------
 # 使用 BCEWithLogitsLoss 代替 BCELoss，因为它在混合精度训练中更安全
 criterion = nn.BCEWithLogitsLoss()
@@ -146,6 +170,13 @@ for epoch in range(start_epoch, args.epochs):
     model.train()
     total_loss = 0
     optimizer.zero_grad()  # 移到外层，用于梯度累积
+    
+    # 每个epoch开始前清理显存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()  # 重置峰值统计
+    
+    print_gpu_memory(f"\n[Epoch {epoch+1}] Start ")
     
     for batch_idx, (tokens, graphs, images, labels) in enumerate(train_loader):
         # 数据保持在CPU，由模型内部按需转移到GPU
@@ -180,8 +211,15 @@ for epoch in range(start_epoch, args.epochs):
                 optimizer.zero_grad()
         
         total_loss += loss.item() * args.gradient_accumulation_steps  # 还原真实loss
+        
+        # 每N个batch打印一次显存（可选，避免输出过多）
+        if (batch_idx + 1) % 10 == 0:
+            allocated, _, _ = print_gpu_memory(f"[Epoch {epoch+1}][Batch {batch_idx+1}/{len(train_loader)}] ")
     
     total_loss /= len(train_loader)
+    
+    # 训练阶段结束，显示峰值显存
+    print_gpu_memory(f"[Epoch {epoch+1}] After Training ")
 
     model.eval()
     y_tr_true, y_tr_prob = [], []
@@ -223,13 +261,24 @@ for epoch in range(start_epoch, args.epochs):
     train_losses.append(total_loss)
     val_losses.append(val_loss)
 
-    print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f}")
+    # 获取显存信息
+    gpu_mem = get_gpu_memory_dict()
+    
+    # 打印epoch结果（包含显存）
+    if torch.cuda.is_available():
+        print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f} | "
+              f"GPU: {gpu_mem['gpu_allocated_gb']:.2f}GB/{gpu_mem['gpu_max_allocated_gb']:.2f}GB(峰值)")
+    else:
+        print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f}")
+    
+    # 记录到wandb（包含显存）
     wandb.log({
         "epoch": epoch + 1,
         "train/loss": total_loss,
         **{f"train/{k}": v for k, v in train_metrics.items()},
         "val/loss": val_loss,
-        **{f"val/{k}": v for k, v in val_metrics.items()}
+        **{f"val/{k}": v for k, v in val_metrics.items()},
+        **gpu_mem  # 添加显存监控
     }, step=epoch + 1)
 
     scheduler.step(val_loss)
