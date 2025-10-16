@@ -268,7 +268,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                         chunk_emb_pooled = chunk_emb_pooled.squeeze(0)
                     
                     # 移到CPU
-                    row_embeddings.append(chunk_emb_pooled)
+                    row_embeddings.append(chunk_emb_pooled.to('cpu'))
                     
                     # 清理GPU显存：显式删除所有GPU tensor
                     del chunk_tokens, chunk_emb_gpu, chunk_emb_pooled
