@@ -271,9 +271,9 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                     row_embeddings.append(chunk_emb_pooled)
                     
                     # 清理GPU显存：显式删除所有GPU tensor
-                    #del chunk_tokens, chunk_emb_gpu, chunk_emb_pooled
-                    # if device.type == 'cuda':
-                    #     torch.cuda.empty_cache()
+                    del chunk_tokens, chunk_emb_gpu, chunk_emb_pooled
+                     if device.type == 'cuda':
+                         torch.cuda.empty_cache()
                 
                 # 合并所有chunks: (L, E) 或每个chunk是(E,)则stack后是(L, E)
                 if len(row_embeddings) > 0 and row_embeddings[0].dim() == 1:
@@ -288,7 +288,7 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
                 all_embeddings.append(sample_embeddings)
                 
                 # 清理CPU tensor
-                #del row_embeddings, sample_embeddings
+                del row_embeddings, sample_embeddings
             
             token_embeddings = torch.stack(all_embeddings)  # (B, E)
         else:
