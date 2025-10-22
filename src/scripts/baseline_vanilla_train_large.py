@@ -1,3 +1,17 @@
+"""
+训练脚本：RNAFM_Drugchat_MultiRow模型
+
+数据处理策略：
+- 训练阶段：将每个样本的RNA token按行展开，每一行与同一个graph、image组合作为独立样本
+  输入: (B, L, T) -> 展开为 (B*L, T)，每行独立训练
+  使用梯度累积：每8个展开后的样本做一次参数更新（实际batch size = 8）
+  
+- 验证/测试阶段：使用完整的多行RNA token输入
+  输入: (B, L, T)，所有行一起进行预测
+
+这种策略使得训练时能够充分利用每行RNA序列的信息，而测试时能够综合所有行做出预测。
+"""
+
 import os
 import time
 import argparse
@@ -11,7 +25,6 @@ import wandb
 from torch.utils.data import DataLoader, random_split
 from torch_geometric.data import Batch
 from src.models.model import RNAFM_Drugchat_MultiRow
-from torch.cuda.amp import autocast, GradScaler
 
 # ------------------ Metric Function ------------------
 def get_metrics(y_true, y_pred_prob, threshold=0.5):
@@ -27,27 +40,6 @@ def get_metrics(y_true, y_pred_prob, threshold=0.5):
         "auc": roc_auc_score(y_true_np, y_prob_np)
     }
 
-# ------------------ GPU Memory Monitoring ------------------
-def print_gpu_memory(prefix=""):
-    """打印当前GPU显存使用情况"""
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
-        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
-        print(f"{prefix}GPU Memory: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB, Max={max_allocated:.2f}GB")
-        return allocated, reserved, max_allocated
-    return 0, 0, 0
-
-def get_gpu_memory_dict():
-    """返回GPU显存字典，用于wandb记录"""
-    if torch.cuda.is_available():
-        return {
-            "gpu_allocated_gb": torch.cuda.memory_allocated() / 1024**3,
-            "gpu_reserved_gb": torch.cuda.memory_reserved() / 1024**3,
-            "gpu_max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3
-        }
-    return {}
-
 # ------------------ Argument Parser ------------------
 parser = argparse.ArgumentParser()
 parser.add_argument('--train_path', type=str, default='datasets/trainset_large.pt')
@@ -61,12 +53,6 @@ parser.add_argument('--patience', type=int, default=5)
 parser.add_argument('--project', type=str, default='fusion-rnafm')
 parser.add_argument('--run_name', type=str, default=time.strftime('%Y%m%d-%H%M%S'))
 parser.add_argument('--mlp_hidden_dim', type=int, default=1024)
-
-# 显存优化参数 (建议全部启用)
-parser.add_argument('--use_amp', action='store_true')
-parser.add_argument('--chunk_size', type=int, default=1)
-parser.add_argument('--gradient_checkpointing', action='store_true')
-parser.add_argument('--gradient_accumulation_steps', type=int, default=8)
 
 args = parser.parse_args()
 
@@ -116,6 +102,45 @@ def collate_fn(batch):
     labels = torch.tensor(labels, dtype=torch.float)
     return tokens, graphs, images, labels
 
+def expand_batch_for_training(tokens, graphs, images, labels):
+    """
+    将batch展开用于训练：每个样本的每一行RNA token与同一个graph、image组合
+    
+    输入:
+        tokens: (B, L, T) - B个样本，每个L行，每行T个token
+        graphs: Batch对象，包含B个graph
+        images: (B, C, H, W) - B个图像
+        labels: (B,) - B个标签
+    
+    输出:
+        tokens_expanded: (B*L, T) - B*L个样本，每个是单行token
+        graphs_expanded: Batch对象，包含B*L个graph（每个graph重复L次）
+        images_expanded: (B*L, C, H, W) - B*L个图像（每个image重复L次）
+        labels_expanded: (B*L,) - B*L个标签（每个label重复L次）
+    """
+    B, L, T = tokens.shape
+    
+    # 展开tokens: (B, L, T) -> (B*L, T)
+    tokens_expanded = tokens.view(B * L, T)
+    
+    # 复制labels: (B,) -> (B*L,)
+    labels_expanded = labels.repeat_interleave(L)
+    
+    # 复制images: (B, C, H, W) -> (B*L, C, H, W)
+    images_expanded = images.repeat_interleave(L, dim=0)
+    
+    # 复制graphs: 需要将每个graph重复L次
+    from torch_geometric.data import Data
+    graph_list = graphs.to_data_list()  # 转换为list
+    expanded_graph_list = []
+    for graph in graph_list:
+        for _ in range(L):
+            # 复制graph（深拷贝避免共享引用）
+            expanded_graph_list.append(graph.clone())
+    graphs_expanded = Batch.from_data_list(expanded_graph_list)
+    
+    return tokens_expanded, graphs_expanded, images_expanded, labels_expanded
+
 # Create data loaders
 train_loader = DataLoader(MultiModalDataset(train_data), batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 val_loader = DataLoader(MultiModalDataset(val_data), batch_size=args.batch_size, collate_fn=collate_fn)
@@ -132,33 +157,19 @@ gnn_config = {
 }
 model = RNAFM_Drugchat_MultiRow(
     gnn_config=gnn_config, 
-    mlp_hidden_dim=args.mlp_hidden_dim,
-    use_gradient_checkpointing=args.gradient_checkpointing,
-    chunk_size=args.chunk_size
+    mlp_hidden_dim=args.mlp_hidden_dim
 ).to(device)
 
-# 打印显存优化配置
-print(f"\n{'='*50}")
-print(f"显存优化配置:")
-print(f"  混合精度训练 (AMP): {args.use_amp}")
-print(f"  梯度检查点: {args.gradient_checkpointing}")
-print(f"  分块大小: {args.chunk_size if args.chunk_size else '不分块'}")
-print(f"  梯度累积步数: {args.gradient_accumulation_steps}")
-print(f"  Batch Size: {args.batch_size}")
-print(f"  等效 Batch Size: {args.batch_size * args.gradient_accumulation_steps}")
-print(f"{'='*50}\n")
-
-# 显示初始显存状态
-print_gpu_memory("Initial ")
+print(f"Model loaded on {device}")
+print(f"Training configuration:")
+print(f"  - Batch size (before expansion): {args.batch_size}")
+print(f"  - Gradient accumulation: Every 8 samples (after expansion)")
+print(f"  - Effective batch size: 8 samples")
 
 # ------------------ Loss, Optimizer ------------------
-# 使用 BCEWithLogitsLoss 代替 BCELoss，因为它在混合精度训练中更安全
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
-
-# 混合精度训练的 GradScaler
-scaler = GradScaler() if args.use_amp else None
 
 # ------------------ Resume Checkpoint ------------------
 start_epoch = 0
@@ -169,70 +180,81 @@ train_losses, val_losses = [], []
 for epoch in range(start_epoch, args.epochs):
     model.train()
     total_loss = 0
-    optimizer.zero_grad()  # 移到外层，用于梯度累积
+    optimizer.zero_grad()  # 在epoch开始时清零梯度
     
-    # 每个epoch开始前清理显存
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()  # 重置峰值统计
-    
-    print_gpu_memory(f"\n[Epoch {epoch+1}] Start ")
+    # 梯度累积配置：每8个样本做一次参数更新
+    accumulated_samples = 0  # 累积的样本数（展开后的样本数）
+    target_samples = 8  # 实际batch size = 8
     
     for batch_idx, (tokens, graphs, images, labels) in enumerate(train_loader):
-        # 数据保持在CPU，由模型内部按需转移到GPU
-        # 只有labels需要转移到device用于计算loss
-        labels = labels.to(device)
+        # 训练阶段：展开数据，每行RNA token与graph、image独立组合
+        # 例如：如果batch_size=2，每个样本有L行，展开后变成 2*L 个样本
+        tokens, graphs, images, labels = expand_batch_for_training(tokens, graphs, images, labels)
         
-        # 使用混合精度训练
-        if args.use_amp:
-            with autocast():
-                output = model(tokens, graphs, images)  # 模型内部处理数据转移
-                loss = criterion(output, labels.float())
-                # 梯度累积：loss需要除以累积步数
-                loss = loss / args.gradient_accumulation_steps
+        # 当前batch的样本数（展开后）
+        current_batch_size = tokens.size(0)
+        
+        # 将graphs转换为list以便切片
+        graph_list = graphs.to_data_list()
+        
+        # 严格按照8个样本为单位进行梯度累积
+        # 如果当前batch展开后的样本数超过8，会分成多个sub-batch处理
+        # 例如：current_batch_size=10, accumulated_samples=0, target_samples=8
+        #   第一轮：处理前8个样本 (start=0, end=8)，累积到8个 → 更新参数
+        #   第二轮：处理后2个样本 (start=8, end=10)，累积到2个 → 继续累积
+        # 例如：current_batch_size=5, accumulated_samples=6, target_samples=8
+        #   当前轮：处理前2个样本 (start=0, end=2)，累积到8个 → 更新参数
+        #   下一轮：处理后3个样本 (start=2, end=5)，累积到3个 → 继续累积
+        start_idx = 0
+        while start_idx < current_batch_size:
+            # 计算当前sub-batch可以处理多少样本
+            remaining_to_target = target_samples - accumulated_samples
+            end_idx = min(start_idx + remaining_to_target, current_batch_size)
             
-            scaler.scale(loss).backward()
+            # 提取sub-batch并转移到device
+            sub_tokens = tokens[start_idx:end_idx].to(device)
+            sub_graph_list = graph_list[start_idx:end_idx]
+            sub_graphs = Batch.from_data_list(sub_graph_list).to(device)
+            sub_images = images[start_idx:end_idx].to(device)
+            sub_labels = labels[start_idx:end_idx].to(device)
             
-            # 每accumulation_steps步或最后一个batch才更新参数
-            if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-        else:
-            # 不使用混合精度
-            output = model(tokens, graphs, images)  # 模型内部处理数据转移
-            loss = criterion(output, labels.float())
-            loss = loss / args.gradient_accumulation_steps
+            # 前向传播（所有数据已在device上）
+            output = model(sub_tokens, sub_graphs, sub_images)  # 输入2D tokens
+            loss = criterion(output, sub_labels.float())
             
+            # 反向传播（梯度累积）
             loss.backward()
             
-            if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
-                optimizer.step()
-                optimizer.zero_grad()
-        
-        total_loss += loss.item() * args.gradient_accumulation_steps  # 还原真实loss
-        
-        # 每N个batch打印一次显存（可选，避免输出过多）
-        if (batch_idx + 1) % 10 == 0:
-            allocated, _, _ = print_gpu_memory(f"[Epoch {epoch+1}][Batch {batch_idx+1}/{len(train_loader)}] ")
+            # 更新累积计数
+            sub_batch_size = end_idx - start_idx
+            accumulated_samples += sub_batch_size
+            total_loss += loss.item()
+            
+            # 如果累积到8个样本，或者是最后一个batch的最后一个sub-batch，更新参数
+            is_last_batch = (batch_idx + 1) == len(train_loader)
+            is_last_sub_batch = end_idx >= current_batch_size
+            
+            if accumulated_samples >= target_samples or (is_last_batch and is_last_sub_batch):
+                optimizer.step()  # 使用累积的梯度更新参数
+                optimizer.zero_grad()  # 清零梯度，准备下一次累积
+                accumulated_samples = 0  # 重置计数器
+            
+            start_idx = end_idx
     
     total_loss /= len(train_loader)
-    
-    # 训练阶段结束，显示峰值显存
-    print_gpu_memory(f"[Epoch {epoch+1}] After Training ")
 
     model.eval()
     y_tr_true, y_tr_prob = [], []
     with torch.no_grad():
         for tokens, graphs, images, labels in train_loader:
-            # 数据保持在CPU，模型内部处理转移
-            if args.use_amp:
-                with autocast():
-                    logits = model(tokens, graphs, images)
-                    probs = torch.sigmoid(logits).cpu()
-            else:
-                logits = model(tokens, graphs, images)
-                probs = torch.sigmoid(logits).cpu()
+            # 评估训练集：使用多行模式 (B, L, T)，不展开数据
+            # 转移数据到device
+            tokens = tokens.to(device)
+            graphs = graphs.to(device)
+            images = images.to(device)
+            
+            logits = model(tokens, graphs, images)  # 输入3D tokens (B, L, T)
+            probs = torch.sigmoid(logits).cpu()
             y_tr_true.extend(labels)
             y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
@@ -241,17 +263,16 @@ for epoch in range(start_epoch, args.epochs):
     y_val_true, y_val_prob = [], []
     with torch.no_grad():
         for tokens, graphs, images, labels in val_loader:
-            # 只有labels需要在device上用于计算loss
+            # 验证阶段：使用多行模式 (B, L, T)，不展开数据
+            # 转移数据到device
+            tokens = tokens.to(device)
+            graphs = graphs.to(device)
+            images = images.to(device)
             labels = labels.to(device)
-            if args.use_amp:
-                with autocast():
-                    logits = model(tokens, graphs, images)  # 模型内部处理数据转移
-                    loss = criterion(logits, labels.float())
-                    probs = torch.sigmoid(logits)
-            else:
-                logits = model(tokens, graphs, images)  # 模型内部处理数据转移
-                loss = criterion(logits, labels.float())
-                probs = torch.sigmoid(logits)
+            
+            logits = model(tokens, graphs, images)  # 输入3D tokens (B, L, T)
+            loss = criterion(logits, labels.float())
+            probs = torch.sigmoid(logits)
             val_loss += loss.item()
             y_val_true.extend(labels.cpu())
             y_val_prob.extend(probs.cpu())
@@ -261,24 +282,16 @@ for epoch in range(start_epoch, args.epochs):
     train_losses.append(total_loss)
     val_losses.append(val_loss)
 
-    # 获取显存信息
-    gpu_mem = get_gpu_memory_dict()
+    # 打印epoch结果
+    print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f}")
     
-    # 打印epoch结果（包含显存）
-    if torch.cuda.is_available():
-        print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f} | "
-              f"GPU: {gpu_mem['gpu_allocated_gb']:.2f}GB/{gpu_mem['gpu_max_allocated_gb']:.2f}GB(峰值)")
-    else:
-        print(f"[Epoch {epoch+1}] Train Loss: {total_loss:.4f} | Val Loss: {val_loss:.4f}")
-    
-    # 记录到wandb（包含显存）
+    # 记录到wandb
     wandb.log({
         "epoch": epoch + 1,
         "train/loss": total_loss,
         **{f"train/{k}": v for k, v in train_metrics.items()},
         "val/loss": val_loss,
-        **{f"val/{k}": v for k, v in val_metrics.items()},
-        **gpu_mem  # 添加显存监控
+        **{f"val/{k}": v for k, v in val_metrics.items()}
     }, step=epoch + 1)
 
     scheduler.step(val_loss)
@@ -307,14 +320,14 @@ model.eval()
 y_true, y_prob = [], []
 with torch.no_grad():
     for tokens, graphs, images, labels in test_loader:
-        # 数据保持在CPU，模型内部处理转移
-        if args.use_amp:
-            with autocast():
-                logits = model(tokens, graphs, images)
-                probs = torch.sigmoid(logits).cpu()
-        else:
-            logits = model(tokens, graphs, images)
-            probs = torch.sigmoid(logits).cpu()
+        # 测试阶段：使用多行模式 (B, L, T)，不展开数据
+        # 转移数据到device
+        tokens = tokens.to(device)
+        graphs = graphs.to(device)
+        images = images.to(device)
+        
+        logits = model(tokens, graphs, images)  # 输入3D tokens (B, L, T)
+        probs = torch.sigmoid(logits).cpu()
         y_true.extend(labels)
         y_prob.extend(probs)
 

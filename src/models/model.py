@@ -197,18 +197,18 @@ class RNAFM_Drugchat_mean(nn.Module):
 class RNAFM_Drugchat_MultiRow(nn.Module):
     """
     处理多行RNA序列数据的模型
-    输入: tokens shape为 (B, L, T), 其中B=batch size, L=行数, T=token length
-    处理流程:
+    
+    支持两种输入模式：
+    1. 训练模式: tokens shape为 (B, T) - 单行RNA序列
+    2. 测试模式: tokens shape为 (B, L, T) - 多行RNA序列
+    
+    处理流程(多行模式):
     1. 对每行进行RNA-FM编码得到 (B, L, T, E)
     2. 先在L维度做mean pooling得到 (B, T, E)
     3. 再在T维度做max pooling得到 (B, E)
     4. 与GNN和CNN输出concat后通过MLP
-    
-    显存优化:
-    - use_gradient_checkpointing: 启用梯度检查点，降低50-70%显存
-    - chunk_size: 分块处理多行数据，避免一次性处理B*L
     """
-    def __init__(self, gnn_config, mlp_hidden_dim, use_gradient_checkpointing=False, chunk_size=None):
+    def __init__(self, gnn_config, mlp_hidden_dim):
         super(RNAFM_Drugchat_MultiRow, self).__init__()
         data_dir = '../input/rnafm-tutorial/'
         temp_model, alphabet = fm.pretrained.rna_fm_t12(Path(data_dir, 'RNA-FM_pretrained.pth'))
@@ -217,106 +217,70 @@ class RNAFM_Drugchat_MultiRow(nn.Module):
         self.gnn = GNN_graphpred(**gnn_config)
         self.cnn = ImageMol("ResNet18")
         self.mlp = MLP(input_dim=1452, hidden_dim=mlp_hidden_dim)
-        
-        # 梯度检查点配置
-        self.use_gradient_checkpointing = use_gradient_checkpointing
-        if use_gradient_checkpointing and hasattr(self.fm_model, 'gradient_checkpointing_enable'):
-            self.fm_model.gradient_checkpointing_enable()
-        
-        # 分块处理配置
-        self.chunk_size = chunk_size
 
     def forward(self, tokens, graph_data, image_data):
         """
-        在模型内部管理数据转移到GPU，实现更精细的显存控制
-        输入可以是CPU或GPU上的数据
-        """
-        # 获取模型所在的device
-        device = next(self.parameters()).device
+        支持两种输入模式：
+        1. 训练模式: tokens shape为 (B, T) - 单行RNA序列
+        2. 测试模式: tokens shape为 (B, L, T) - 多行RNA序列
         
+        注意：所有输入数据应该已经在正确的device上
+        """
+        # 检测输入维度，支持2D和3D tokens
+        if tokens.dim() == 2:
+            # 单行模式 (B, T) - 用于训练
+            return self._forward_single_row(tokens, graph_data, image_data)
+        elif tokens.dim() == 3:
+            # 多行模式 (B, L, T) - 用于测试
+            return self._forward_multi_row(tokens, graph_data, image_data)
+        else:
+            raise ValueError(f"tokens must be 2D (B, T) or 3D (B, L, T), got shape {tokens.shape}")
+    
+    def _forward_single_row(self, tokens, graph_data, image_data):
+        """处理单行RNA序列 (B, T)"""
+        # Get RNA-FM embeddings: (B, T, E)
+        token_embeddings = self.fm_model(tokens, repr_layers=[12])['representations'][12]
+        
+        # Max pooling over T dimension: (B, T, E) -> (B, E)
+        token_embeddings = torch.max(token_embeddings, dim=1).values
+        
+        # 处理 GNN
+        graph_embeddings = self.gnn(graph_data)
+        
+        # 处理 CNN
+        image_embeddings = self.cnn(image_data)
+        
+        # 合并并通过MLP
+        combined = torch.cat((token_embeddings, graph_embeddings, image_embeddings), dim=1)
+        return self.mlp(combined)
+    
+    def _forward_multi_row(self, tokens, graph_data, image_data):
+        """处理多行RNA序列 (B, L, T)"""
         # tokens shape: (B, L, T) where B=batch, L=lines/rows, T=token_length
         B, L, T = tokens.shape
         
-        # Step 1: 处理 RNA tokens (按需转移到GPU)
-        # 如果启用分块处理，避免一次性处理 B*L 的大batch
-        print(f"tokens.shape: {tokens.shape}, device: {tokens.device}")
-        tokens = tokens.to(device)
-        print_gpu_memory()
-        if self.chunk_size is not None and L > self.chunk_size:
-            # 分块处理每个样本的多行数据
-            # 关键：tokens保持在CPU，只转移当前chunk到GPU
-            all_embeddings = []
-            for b in range(B):
-                row_embeddings = []
-                for chunk_start in range(0, L, self.chunk_size):
-                    chunk_end = min(chunk_start + self.chunk_size, L)
-                    
-                    # 关键：从CPU切片后再转到GPU，避免整个tokens占用GPU
-                    chunk_tokens = tokens[b, chunk_start:chunk_end, :]
-                    print(f"Processing chunk {chunk_start}:{chunk_end}, shape: {chunk_tokens.shape}, device: {chunk_tokens.device}")
-                    print_gpu_memory()
-                    
-                    # 处理当前chunk并立即pooling，减少显存占用
-                    # (chunk_size, T) -> (chunk_size, T, E) -> (chunk_size, E)
-                    chunk_emb_gpu = self.fm_model(chunk_tokens, repr_layers=[12])['representations'][12]
-                    
-                    # 立即在T维度做max pooling: (chunk_size, T, E) -> (chunk_size, E)
-                    chunk_emb_pooled = torch.max(chunk_emb_gpu, dim=1).values
-                    
-                    # 如果chunk_size=1，squeeze掉batch维度: (1, E) -> (E,)
-                    if chunk_emb_pooled.shape[0] == 1:
-                        chunk_emb_pooled = chunk_emb_pooled.squeeze(0)
-                    
-                    # 移到CPU
-                    row_embeddings.append(chunk_emb_pooled.to('cpu'))
-                    
-                    # 清理GPU显存：显式删除所有GPU tensor
-                    del chunk_tokens, chunk_emb_gpu, chunk_emb_pooled
-                    if device.type == 'cuda':
-                        torch.cuda.empty_cache()
-                
-                # 合并所有chunks: (L, E) 或每个chunk是(E,)则stack后是(L, E)
-                if len(row_embeddings) > 0 and row_embeddings[0].dim() == 1:
-                    # 每个是(E,), stack后是(L, E)
-                    sample_embeddings = torch.stack(row_embeddings).to(device)
-                else:
-                    # 每个是(chunk_size, E), cat后是(L, E)
-                    sample_embeddings = torch.cat(row_embeddings, dim=0).to(device)
-                
-                # Mean pooling over L: (L, E) -> (E,)
-                sample_embeddings = torch.mean(sample_embeddings, dim=0)
-                all_embeddings.append(sample_embeddings)
-                
-                # 清理CPU tensor
-                del row_embeddings, sample_embeddings
-            
-            token_embeddings = torch.stack(all_embeddings)  # (B, E)
-        else:
-            # 原始处理方式：一次性处理所有行
-            tokens = tokens.to(device)  # 转移到GPU
-            tokens_reshaped = tokens.view(B * L, T)
-            
-            # Get RNA-FM embeddings for all rows: (B*L, T, E)
-            token_embeddings = self.fm_model(tokens_reshaped, repr_layers=[12])['representations'][12]
-            _, T_out, E = token_embeddings.shape
-            
-            # Reshape back to (B, L, T, E)
-            token_embeddings = token_embeddings.view(B, L, T_out, E)
-            
-            # Mean pooling over L dimension: (B, L, T, E) -> (B, T, E)
-            token_embeddings = torch.mean(token_embeddings, dim=1)
-            
-            # Max pooling over T dimension: (B, T, E) -> (B, E)
-            token_embeddings = torch.max(token_embeddings, dim=1).values
+        # Reshape
+        tokens_reshaped = tokens.view(B * L, T)
         
-        # Step 2: 处理 GNN (转移graph数据到GPU)
-        graph_data = graph_data.to(device)
+        # Get RNA-FM embeddings for all rows: (B*L, T, E)
+        token_embeddings = self.fm_model(tokens_reshaped, repr_layers=[12])['representations'][12]
+        _, T_out, E = token_embeddings.shape
+        
+        # Reshape back to (B, L, T, E)
+        token_embeddings = token_embeddings.view(B, L, T_out, E)
+        
+        # Mean pooling over L dimension: (B, L, T, E) -> (B, T, E)
+        token_embeddings = torch.mean(token_embeddings, dim=1)
+        
+        # Max pooling over T dimension: (B, T, E) -> (B, E)
+        token_embeddings = torch.max(token_embeddings, dim=1).values
+        
+        # 处理 GNN
         graph_embeddings = self.gnn(graph_data)
         
-        # Step 3: 处理 CNN (转移image数据到GPU)
-        image_data = image_data.to(device)
+        # 处理 CNN
         image_embeddings = self.cnn(image_data)
         
-        # Step 4: 合并并通过MLP
+        # 合并并通过MLP
         combined = torch.cat((token_embeddings, graph_embeddings, image_embeddings), dim=1)
         return self.mlp(combined)
