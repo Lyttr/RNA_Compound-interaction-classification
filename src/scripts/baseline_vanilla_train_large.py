@@ -245,18 +245,18 @@ for epoch in range(start_epoch, args.epochs):
 
     model.eval()
     y_tr_true, y_tr_prob = [], []
-    with torch.no_grad():
-        for tokens, graphs, images, labels in train_loader:
-            # 评估训练集：使用多行模式 (B, L, T)，不展开数据
-            # 转移数据到device
-            tokens = tokens.to(device)
-            graphs = graphs.to(device)
-            images = images.to(device)
+    # with torch.no_grad():
+    #     for tokens, graphs, images, labels in train_loader:
+    #         # 评估训练集：使用多行模式 (B, L, T)，不展开数据
+    #         # 转移数据到device
+    #         tokens = tokens.to(device)
+    #         graphs = graphs.to(device)
+    #         images = images.to(device)
             
-            logits = model(tokens, graphs, images)  # 输入3D tokens (B, L, T)
-            probs = torch.sigmoid(logits).cpu()
-            y_tr_true.extend(labels)
-            y_tr_prob.extend(probs)
+    #         logits = model(tokens, graphs, images)  # 输入3D tokens (B, L, T)
+    #         probs = torch.sigmoid(logits).cpu()
+    #         y_tr_true.extend(labels)
+    #         y_tr_prob.extend(probs)
     train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
 
     val_loss = 0
