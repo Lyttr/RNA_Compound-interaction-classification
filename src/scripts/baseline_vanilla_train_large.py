@@ -244,7 +244,7 @@ for epoch in range(start_epoch, args.epochs):
     total_loss /= len(train_loader)
 
     model.eval()
-    y_tr_true, y_tr_prob = [], []
+    #y_tr_true, y_tr_prob = [], []
     # with torch.no_grad():
     #     for tokens, graphs, images, labels in train_loader:
     #         # 评估训练集：使用多行模式 (B, L, T)，不展开数据
@@ -257,7 +257,7 @@ for epoch in range(start_epoch, args.epochs):
     #         probs = torch.sigmoid(logits).cpu()
     #         y_tr_true.extend(labels)
     #         y_tr_prob.extend(probs)
-    train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
+    #train_metrics = get_metrics(torch.tensor(y_tr_true), torch.stack(y_tr_prob))
 
     val_loss = 0
     y_val_true, y_val_prob = [], []
@@ -289,7 +289,7 @@ for epoch in range(start_epoch, args.epochs):
     wandb.log({
         "epoch": epoch + 1,
         "train/loss": total_loss,
-        **{f"train/{k}": v for k, v in train_metrics.items()},
+       # **{f"train/{k}": v for k, v in train_metrics.items()},
         "val/loss": val_loss,
         **{f"val/{k}": v for k, v in val_metrics.items()}
     }, step=epoch + 1)
