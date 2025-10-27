@@ -184,7 +184,7 @@ for epoch in range(start_epoch, args.epochs):
     
     # 梯度累积配置：每8个样本做一次参数更新
     accumulated_samples = 0  # 累积的样本数（展开后的样本数）
-    target_samples = 8  # 实际batch size = 8
+    target_samples = 6  # 实际batch size = 8
     
     for batch_idx, (tokens, graphs, images, labels) in enumerate(train_loader):
         # 训练阶段：展开数据，每行RNA token与graph、image独立组合
